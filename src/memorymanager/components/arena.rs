@@ -10,6 +10,7 @@ use crate::memorymanager::components::metabin::Metabin;
 use crate::memorymanager::components::superbin::{Superbin, SUPERBLOCK_ARRAY_MAXSIZE};
 use crate::memorymanager::internals::allocator::free_mmap;
 use crate::memorymanager::internals::compression::{CompressionSlidingWindow, SLIDING_WINDOW_SIZE};
+use crate::memorymanager::internals::simd_common::prefetch;
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 

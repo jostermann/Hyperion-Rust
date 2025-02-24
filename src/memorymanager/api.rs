@@ -184,47 +184,48 @@ mod test_global {
     #[test]
     fn test() {
         initialize();
+        const IT: usize = 20000000;
 
         let handle1 = thread::Builder::new()
-        .name("Test_Thread1".into())
-        .spawn(|| {
-        const ITERATIONS: usize = 7000000 / 2;
-        let arena = unsafe { get_next_arena().as_mut().unwrap() };
-        let mut vec: Vec<HyperionPointer> = Vec::with_capacity(ITERATIONS);
+            .name("Test_Thread1".into())
+            .spawn(|| {
+                const ITERATIONS: usize = IT / 2;
+                let arena = unsafe { get_next_arena().as_mut().unwrap() };
+                let mut vec: Vec<HyperionPointer> = Vec::with_capacity(ITERATIONS);
 
-        for i in 0..ITERATIONS {
-        let size = 1000;
-        vec.push(malloc(arena, size));
-        let _ = is_chained_pointer(arena, &mut vec[i]);
-        let _ = get_pointer(arena, &mut vec[i], 1, 0);
-        }
+                for i in 0..ITERATIONS {
+                    let size = 200;
+                    vec.push(malloc(arena, size));
+                    let _ = is_chained_pointer(arena, &mut vec[i]);
+                    let _ = get_pointer(arena, &mut vec[i], 1, 0);
+                }
 
-        for i in 0..ITERATIONS / 3 {
-        let current_pointer = &mut vec[i];
-        vec[i] = reallocate(arena, current_pointer, 3500, 0);
-        }
-        })
-        .unwrap();
+                for i in 0..ITERATIONS {
+                    let current_pointer = &mut vec[i];
+                    vec[i] = reallocate(arena, current_pointer, 500, 0);
+                }
+            })
+            .unwrap();
 
         let handle2 = thread::Builder::new()
-        .name("Test_Thread2".into())
-        .spawn(|| {
-        const ITERATIONS: usize = 7000000 / 2;
-        let arena = unsafe { get_next_arena().as_mut().unwrap() };
-        let mut vec: Vec<HyperionPointer> = Vec::with_capacity(ITERATIONS);
+            .name("Test_Thread2".into())
+            .spawn(|| {
+                const ITERATIONS: usize = IT / 2;
+                let arena = unsafe { get_next_arena().as_mut().unwrap() };
+                let mut vec: Vec<HyperionPointer> = Vec::with_capacity(ITERATIONS);
 
-        for i in 0..ITERATIONS {
-        let size = 1000;
-        vec.push(malloc(arena, size));
-        let _ = is_chained_pointer(arena, &mut vec[i]);
-        let _ = get_pointer(arena, &mut vec[i], 1, 0);
-        }
+                for i in 0..ITERATIONS {
+                    let size = 200;
+                    vec.push(malloc(arena, size));
+                    let _ = is_chained_pointer(arena, &mut vec[i]);
+                    let _ = get_pointer(arena, &mut vec[i], 1, 0);
+                }
 
-        for i in 0..ITERATIONS / 3 {
-        let current_pointer = &mut vec[i];
-        vec[i] = reallocate(arena, current_pointer, 3500, 0);
-        }
-        })
+                for i in 0..ITERATIONS {
+                    let current_pointer = &mut vec[i];
+                    vec[i] = reallocate(arena, current_pointer, 500, 0);
+                }
+            })
         .unwrap();
         handle1.join().unwrap();
         handle2.join().unwrap();

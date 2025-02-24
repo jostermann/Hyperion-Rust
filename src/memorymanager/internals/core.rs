@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::ptr::null_mut;
+use std::ptr::{copy, null_mut, write_bytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::{memcpy, memset, size_t};
@@ -9,7 +9,7 @@ use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFL
 use crate::memorymanager::components::metabin::Metabin;
 use crate::memorymanager::components::superbin::{get_sblock_id, Superbin};
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, auto_reallocate_memory, AllocatedBy};
-use crate::memorymanager::internals::compression::{compress_arena, decompress_extended, CompressionState};
+use crate::memorymanager::internals::compression::{compress_arena, decompress_bin, decompress_extended, CompressionState};
 use crate::memorymanager::internals::simd_common::apply_index_search;
 use crate::memorymanager::internals::system_information::get_memory_stats;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
@@ -181,7 +181,7 @@ pub fn create_new_chunks(arena: &mut ArenaInner, hyperion_pointer: &mut Hyperion
 
         let new_data: *mut c_void = get_chunk_pointer(arena, &mut new_hyperion_pointer);
         unsafe {
-            memcpy(new_data, get_chunk_pointer(arena, hyperion_pointer), chunk_size as size_t);
+            copy(get_chunk_pointer(arena, hyperion_pointer) as *const u8, new_data as *mut u8, chunk_size as usize);
         }
 
         free_from_pointer(arena, hyperion_pointer);
@@ -236,7 +236,8 @@ fn reallocate_hyperion_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
     let new_data: *mut c_void = get_chunk(arena, &mut new_pointer, 1, 0);
     let allocation_size: u16 = arena.get_superbin_ref(hyperion_pointer).get_datablock_size();
     unsafe {
-        memcpy(
+        copy(old_data as *const u8, new_data as *mut u8, allocation_size.min(size as u16) as usize);
+        /*memcpy(
             new_data,
             old_data,
             if allocation_size > size as u16 {
@@ -244,7 +245,7 @@ fn reallocate_hyperion_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
             } else {
                 allocation_size as size_t
             }
-        );
+        );*/
     }
     free_from_pointer(arena, hyperion_pointer);
     new_pointer
@@ -283,15 +284,7 @@ fn reallocate_shrink(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPoin
     let extended_pointer: &mut ExtendedHyperionPointer = bin.get_extended_pointer_to_bin_ref(hyperion_pointer);
 
     unsafe {
-        memcpy(
-            new_data,
-            extended_pointer.data.get(),
-            if size > extended_pointer.requested_size as usize {
-                extended_pointer.requested_size as size_t
-            } else {
-                size as size_t
-            }
-        );
+        copy(extended_pointer.data.get() as *const u8, new_data as *mut u8, extended_pointer.requested_size.min(size as i32) as usize);
     }
     free_from_pointer(arena, hyperion_pointer);
     new_pointer
@@ -379,7 +372,7 @@ fn free_chunks_deflated(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionP
         for i in 0..BIN_ELEMENTS_DEFLATED {
             if (*probe) == hyperion_pointer.chunk_id() {
                 let chunk: *mut c_void = bin.chunks.add_get(bin_size as usize * i);
-                memset(chunk, 0, bin_size as usize);
+                write_bytes(chunk as *mut u8, 0, bin_size as usize);
                 *probe = 0xFF;
                 arena.get_metabin_ref(hyperion_pointer).free_chunks += 1;
                 break;
@@ -401,7 +394,7 @@ fn free_chunks_normal(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPoi
     } else {
         let chunk_pointer: *mut c_void = get_chunk_pointer(arena, hyperion_pointer);
         unsafe {
-            memset(chunk_pointer, 0, arena.get_superbin_ref(hyperion_pointer).header.size_of_bin() as size_t);
+            write_bytes(chunk_pointer as *mut u8, 0, arena.get_superbin_ref(hyperion_pointer).header.size_of_bin() as usize);
         }
     }
 

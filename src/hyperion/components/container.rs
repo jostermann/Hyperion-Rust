@@ -1,8 +1,11 @@
+use std::ffi::c_void;
+use std::ptr::write_bytes;
 use bitfield_struct::bitfield;
-use libc::pthread_spinlock_t;
+use libc::{memmove, pthread_spinlock_t};
 
-use crate::hyperion::components::context::{EmbeddedTraversalContext, OperationContext};
-use crate::hyperion::components::jump_table::{SubNodeJumpTable, SubNodeJumpTableEntry, TOPLEVEL_JUMPTABLE_ENTRIES};
+use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext, OperationContext};
+use crate::hyperion::components::jump_table::{SubNodeJumpTable, SubNodeJumpTableEntry, SUBLEVEL_JUMPTABLE_ENTRIES, SUBLEVEL_JUMPTABLE_SHIFTBITS, TOPLEVEL_JUMPTABLE_ENTRIES};
+use crate::hyperion::components::node_header::NodeHeader;
 use crate::hyperion::internals::atomic_pointer::AtomicArena;
 use crate::hyperion::internals::core::GLOBAL_CONFIG;
 use crate::memorymanager::api::HyperionPointer;
@@ -90,6 +93,74 @@ impl Container {
             }
         }
     }
+
+    pub unsafe fn wrap_shift_container(&mut self, start_shift: *mut c_void, shift_len: usize) {
+        let remaining_length = self.size() as i64 - ((self as *const Container as *const u8).offset_from(start_shift as *const u8) as u8 + self.free_bytes()) as i64;
+        if remaining_length > 0 {
+            shift_container(start_shift, shift_len, remaining_length as usize)
+        }
+    }
+
+    pub fn update_space_usage(&mut self, usage_delta: i16, operation_context: &mut OperationContext, container_traversal_context: &mut ContainerTraversalContext) {
+        assert!(self.free_bytes() as i16 >= usage_delta);
+        let mut i: usize = 0;
+        self.set_free_size_left((self.free_bytes() as i16 - usage_delta) as u32);
+        let root_container_subchar_set = operation_context.jump_table_sub_context.as_ref().unwrap().root_container_sub_char_set;
+        let root_container_subchar = operation_context.jump_table_sub_context.as_ref().unwrap().root_container_sub_char;
+        let node = &mut operation_context.jump_table_sub_context.as_mut().unwrap().top_node;
+
+        if node.is_some() {
+            let node = node.as_deref_mut().unwrap();
+            if node.as_top_node().jump_table() == 1 {
+                let char_to_check =
+                    if root_container_subchar_set > 0 {
+                        root_container_subchar as u8
+                    }
+                    else {
+                        container_traversal_context.second_char
+                    };
+                i = char_to_check as usize >> SUBLEVEL_JUMPTABLE_SHIFTBITS;
+
+                let jump_table = unsafe { (node as *const NodeHeader as *const c_void).add(node.get_offset_jump_table() as usize) as *mut i16 };
+                let mut previous_value: i32 = -1;
+                for i in i..SUBLEVEL_JUMPTABLE_ENTRIES {
+                    unsafe {
+                        previous_value = *(jump_table.add(i)) as i32;
+                        *(jump_table.add(i)) += usage_delta;
+                    }
+                }
+            }
+        }
+
+        let predecessor = &mut operation_context.jump_context.as_mut().unwrap().predecessor;
+        if predecessor.is_some() {
+            let predecessor = predecessor.as_deref_mut().unwrap();
+            unsafe {
+                *((predecessor as *const NodeHeader as *const c_void).add(predecessor.get_offset_jump_table() as usize) as *mut i16) += usage_delta;
+            }
+        }
+
+        self.update_top_node_jumptable_entries(operation_context, usage_delta);
+        let emb_container_depth = operation_context.embedded_traversal_context.as_mut().unwrap().embedded_container_depth;
+
+        if emb_container_depth > 0 {
+            let emb_stack = &mut operation_context.embedded_traversal_context.as_mut().unwrap().embedded_stack;
+            for i in (0..emb_container_depth as usize).rev() {
+                unsafe {
+                    let current_em_container = emb_stack[i].borrow_mut();
+                    let current_size = current_em_container.size();
+                    current_em_container.set_size(current_size + usage_delta as u8);
+                }
+            }
+        }
+
+        container_traversal_context.safe_offset = (self.size() - self.free_bytes() as u32) as i32;
+    }
+}
+
+pub unsafe fn shift_container(start_shift: *mut c_void, shift_len: usize, container_tail: usize) {
+    memmove(start_shift.add(shift_len), start_shift, container_tail);
+    write_bytes(start_shift as *mut u8, 0, shift_len);
 }
 
 #[bitfield(u8)]

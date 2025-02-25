@@ -1,11 +1,11 @@
 use std::ffi::c_void;
-
+use std::ptr::copy;
 use bitfield_struct::bitfield;
 use libc::{memcmp, size_t};
 
 use crate::hyperion::components::container::{ContainerLink, EmbeddedContainer};
-use crate::hyperion::components::context::{ContainerTraversalContext, JumpContext, OperationContext, RangeQueryContext};
-use crate::hyperion::components::jump_table::TopNodeJumpTable;
+use crate::hyperion::components::context::{ContainerTraversalContext, JumpContext, OperationCommand, OperationContext, PathCompressedEjectionContext, RangeQueryContext};
+use crate::hyperion::components::jump_table::{TopNodeJumpTable, SUBLEVEL_JUMPTABLE_SHIFTBITS};
 use crate::hyperion::components::node::NodeType::{InnerNode, Invalid, LeafNodeEmpty, LeafNodeWithValue};
 use crate::hyperion::components::node::{NodeType, NodeValue};
 use crate::hyperion::components::return_codes::ReturnCode;
@@ -44,7 +44,7 @@ impl NodeHeader {
         self as *const NodeHeader
     }
 
-    pub fn self_as_raw_mut(&mut self) -> *mut NodeHeader {
+    pub fn as_raw_mut(&mut self) -> *mut NodeHeader {
         self as *mut NodeHeader
     }
 
@@ -113,6 +113,13 @@ impl NodeHeader {
 
     pub fn get_offset_to_next_node(&self) -> usize {
         if self.as_top_node().is_top_node() {
+            return self.get_offset_top_node();
+        }
+        self.get_offset_sub_node()
+    }
+
+    pub fn get_offset(&self) -> usize {
+        if self.as_top_node().container_type() == 0 {
             return self.get_offset_top_node();
         }
         self.get_offset_sub_node()
@@ -238,14 +245,14 @@ impl NodeHeader {
         OK
     }
 
-    pub fn register_jump_context(&mut self, container_traversal_context: &mut ContainerTraversalContext, operation_context: &mut OperationContext) {
+    pub fn register_jump_context<'a>(&'a mut self, container_traversal_context: &mut ContainerTraversalContext, operation_context: &mut OperationContext<'a>) {
         let jump_context: &mut JumpContext = operation_context.get_jump_context_mut();
         if self.as_top_node().jump_successor() == 1 {
-            jump_context.predecessor = AtomicHeader::new_from_pointer(self.self_as_raw_mut());
+            jump_context.predecessor = Some(self);//AtomicHeader::new_from_pointer(self.as_raw_mut());
             jump_context.sub_nodes_seen = 0;
             jump_context.top_node_predecessor_offset_absolute = container_traversal_context.current_container_offset;
         } else {
-            jump_context.predecessor = AtomicPointer::new();
+            jump_context.predecessor = None;
         }
     }
 
@@ -258,7 +265,7 @@ impl NodeHeader {
                 hyperion_callback(
                     &mut range_query_context.current_key,
                     range_query_context.current_key_offset + 1,
-                    &mut AtomicNodeValue::new_from_pointer(self.self_as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue)
+                    &mut AtomicNodeValue::new_from_pointer(self.as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue)
                 )
             },
             Invalid | InnerNode => true
@@ -274,7 +281,7 @@ impl NodeHeader {
                 hyperion_callback(
                     &mut range_query_context.current_key,
                     range_query_context.current_key_offset + 2,
-                    &mut AtomicNodeValue::new_from_pointer(self.self_as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue)
+                    &mut AtomicNodeValue::new_from_pointer(self.as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue)
                 )
             },
             Invalid | InnerNode => true
@@ -297,6 +304,58 @@ impl NodeHeader {
             memcmp(op_key.add_get(2) as *mut c_void, key as *mut c_void, key_len as size_t) == 0
         }
     }
+
+    pub fn use_sub_node_jump_table(&mut self, container_traversal_context: &mut ContainerTraversalContext) -> u8 {
+        let jump_class = container_traversal_context.second_char >> SUBLEVEL_JUMPTABLE_SHIFTBITS;
+
+        if jump_class > 0 {
+            let jump_table_pointer: *mut u16 = unsafe { self.as_raw_mut().add(self.get_offset_jump_table() as usize) } as *mut u16;
+            container_traversal_context.current_container_offset += self.get_offset() as i32 + unsafe { *jump_table_pointer + (jump_class as u16 - 1) } as i32;
+            return jump_class << SUBLEVEL_JUMPTABLE_SHIFTBITS;
+        }
+
+        container_traversal_context.current_container_offset += self.get_offset() as i32;
+        0
+    }
+
+    pub fn safe_path_compressed_context(&mut self, operation_context: &mut OperationContext) {
+        let pc_node = self.as_path_compressed();
+        operation_context.path_compressed_ejection_context = Some(PathCompressedEjectionContext::default());
+
+        if pc_node.value_present() == 1 {
+            unsafe {
+                copy(
+                    (pc_node as *const PathCompressedNodeHeader as *const c_void).add(size_of::<PathCompressedNodeHeader>()).add(size_of::<NodeValue>()) as *const u8,
+                    operation_context.path_compressed_ejection_context.as_mut().unwrap().partial_key.as_mut_ptr() as *mut u8,
+                    pc_node.size() as usize - (size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>())
+                );
+                copy(
+                    (pc_node as *const PathCompressedNodeHeader as *const c_void).add(size_of::<PathCompressedNodeHeader>()).add(size_of::<NodeValue>()) as *const u8,
+                    &mut operation_context.path_compressed_ejection_context.as_mut().unwrap().node_value as *mut NodeValue as *mut u8,
+                    size_of::<NodeValue>()
+                );
+            }
+        }
+        else {
+            unsafe {
+                copy(
+                    (pc_node as *const PathCompressedNodeHeader as *const c_void).add(size_of::<PathCompressedNodeHeader>()) as *const u8,
+                    operation_context.path_compressed_ejection_context.as_mut().unwrap().partial_key.as_mut_ptr() as *mut u8,
+                    pc_node.size() as usize - size_of::<PathCompressedNodeHeader>()
+                );
+            }
+        }
+        operation_context.path_compressed_ejection_context.as_mut().unwrap().pec_valid = 1;
+        unsafe {
+            copy(
+                (pc_node as *const PathCompressedNodeHeader as *const c_void) as *const u8,
+                &mut operation_context.path_compressed_ejection_context.as_mut().unwrap().path_compressed_node_header as *mut PathCompressedNodeHeader as *mut u8,
+                size_of::<PathCompressedNodeHeader>()
+            );
+        }
+    }
+
+
 }
 
 #[bitfield(u8, order = Msb)]

@@ -74,7 +74,7 @@ impl Container {
         }
         let top_node_key = operation_context.jump_context.as_mut().unwrap().top_node_key;
         let embedded_context: &mut Option<EmbeddedTraversalContext> = &mut operation_context.embedded_traversal_context;
-        let root_container: &mut Container = embedded_context.as_mut().unwrap().root_container;
+        let root_container: &mut Container = embedded_context.as_mut().unwrap().root_container.as_mut();
 
         let items = TOPLEVEL_JUMPTABLE_ENTRIES * self.jump_table() as usize;
         let jump_table_entry_base: *mut SubNodeJumpTableEntry = root_container.get_jump_table_pointer();

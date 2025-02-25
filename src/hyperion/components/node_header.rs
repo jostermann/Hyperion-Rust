@@ -245,10 +245,10 @@ impl NodeHeader {
         OK
     }
 
-    pub fn register_jump_context<'a>(&'a mut self, container_traversal_context: &mut ContainerTraversalContext, operation_context: &mut OperationContext<'a>) {
+    pub fn register_jump_context(&mut self, container_traversal_context: &mut ContainerTraversalContext, operation_context: &mut OperationContext) {
         let jump_context: &mut JumpContext = operation_context.get_jump_context_mut();
         if self.as_top_node().jump_successor() == 1 {
-            jump_context.predecessor = Some(self);//AtomicHeader::new_from_pointer(self.as_raw_mut());
+            jump_context.predecessor = Some(unsafe { Box::from_raw(self.as_raw_mut()) });//AtomicHeader::new_from_pointer(self.as_raw_mut());
             jump_context.sub_nodes_seen = 0;
             jump_context.top_node_predecessor_offset_absolute = container_traversal_context.current_container_offset;
         } else {

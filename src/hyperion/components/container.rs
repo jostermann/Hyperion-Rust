@@ -6,11 +6,12 @@ use libc::{memmove, pthread_spinlock_t};
 use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext, OperationContext};
 use crate::hyperion::components::jump_table::{SubNodeJumpTable, SubNodeJumpTableEntry, SUBLEVEL_JUMPTABLE_ENTRIES, SUBLEVEL_JUMPTABLE_SHIFTBITS, TOPLEVEL_JUMPTABLE_ENTRIES};
 use crate::hyperion::components::node_header::NodeHeader;
-use crate::hyperion::internals::atomic_pointer::AtomicArena;
+use crate::hyperion::internals::atomic_pointer::{AtomicArena, CONTAINER_SIZE_TYPE_0};
 use crate::hyperion::internals::core::GLOBAL_CONFIG;
 use crate::memorymanager::api::HyperionPointer;
 
 pub const CONTAINER_MAX_EMBEDDED_DEPTH: usize = 28;
+pub const CONTAINER_MAX_FREESIZE: usize = CONTAINER_SIZE_TYPE_0;
 
 #[bitfield(u32, order = Msb)]
 pub struct Container {
@@ -163,6 +164,10 @@ pub unsafe fn shift_container(start_shift: *mut c_void, shift_len: usize, contai
     write_bytes(start_shift as *mut u8, 0, shift_len);
 }
 
+pub fn get_container_link_size() -> usize {
+    size_of::<ContainerLink>()
+}
+
 #[bitfield(u8)]
 pub struct EmbeddedContainer {
     pub size: u8
@@ -170,7 +175,7 @@ pub struct EmbeddedContainer {
 
 #[repr(align(8))]
 pub struct ContainerLink {
-    ptr: HyperionPointer
+    pub ptr: HyperionPointer
 }
 
 pub struct RootContainerStats {

@@ -1,19 +1,21 @@
-use std::ffi::c_void;
-use std::ops::DerefMut;
-use std::ptr::{copy, write_bytes};
 use bitfield_struct::bitfield;
-use libc::{memcmp, memmove, size_t, write};
+use libc::{memcmp, memmove, size_t};
+use std::ffi::c_void;
+use std::panic::RefUnwindSafe;
+use std::ptr::{copy, write_bytes};
 
-use crate::hyperion::components::container::{get_container_link_size, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_FREESIZE};
-use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext, JumpContext, OperationCommand, OperationContext, PathCompressedEjectionContext, RangeQueryContext};
+use crate::hyperion::components::container::{get_container_link_size, shift_container, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_FREESIZE};
+use crate::hyperion::components::context::{
+    ContainerTraversalContext, EmbeddedTraversalContext, JumpContext, OperationContext, PathCompressedEjectionContext, RangeQueryContext,
+};
 use crate::hyperion::components::jump_table::{TopNodeJumpTable, SUBLEVEL_JUMPTABLE_SHIFTBITS};
 use crate::hyperion::components::node::NodeType::{InnerNode, Invalid, LeafNodeEmpty, LeafNodeWithValue};
-use crate::hyperion::components::node::{NodeType, NodeValue};
+use crate::hyperion::components::node::{update_successor_key, Node, NodeType, NodeValue};
 use crate::hyperion::components::return_codes::ReturnCode;
 use crate::hyperion::components::return_codes::ReturnCode::{GetFailureNoLeaf, OK};
 use crate::hyperion::components::sub_node::{ChildLinkType, SubNode};
 use crate::hyperion::components::top_node::TopNode;
-use crate::hyperion::internals::atomic_pointer::{AtomicChar, AtomicEmbContainer, AtomicHeader, AtomicNodeValue, AtomicPointer};
+use crate::hyperion::internals::atomic_pointer::{AtomicChar, AtomicEmbContainer, AtomicNodeValue};
 use crate::hyperion::internals::core::{initialize_ejected_container, HyperionCallback, GLOBAL_CONFIG};
 use crate::hyperion::internals::helpers::{copy_memory_from, copy_memory_to};
 use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
@@ -22,23 +24,23 @@ use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 #[derive(Clone, Copy)]
 union NodeUnion {
     pub top_node: TopNode,
-    pub sub_node: SubNode
+    pub sub_node: SubNode,
 }
 
 pub struct NodeHeader {
-    header: NodeUnion
+    header: NodeUnion,
 }
 
 impl NodeHeader {
     pub fn new_top_node(top_node: TopNode) -> Self {
         NodeHeader {
-            header: NodeUnion { top_node }
+            header: NodeUnion { top_node },
         }
     }
 
     pub fn new_sub_node(sub_node: SubNode) -> Self {
         NodeHeader {
-            header: NodeUnion { sub_node }
+            header: NodeUnion { sub_node },
         }
     }
 
@@ -101,7 +103,7 @@ impl NodeHeader {
     pub fn get_leaf_size(&self) -> usize {
         match self.as_top_node().type_flag() {
             LeafNodeWithValue => size_of::<NodeValue>(),
-            _ => 0
+            _ => 0,
         }
     }
 
@@ -117,7 +119,7 @@ impl NodeHeader {
             ChildLinkType::None => 0,
             ChildLinkType::Link => size_of::<ContainerLink>(),
             ChildLinkType::EmbeddedContainer => unsafe { (*self.as_raw_embedded(self.get_offset_child_container())).size() as usize },
-            ChildLinkType::PathCompressed => unsafe { (*self.as_raw_compressed()).size() as usize }
+            ChildLinkType::PathCompressed => unsafe { (*self.as_raw_compressed()).size() as usize },
         }
     }
 
@@ -202,16 +204,16 @@ impl NodeHeader {
                 copy_memory_from(
                     pc_head.as_raw_char().add(size_of::<PathCompressedNodeHeader>()),
                     ocx.get_return_value_mut() as *mut NodeValue,
-                    size_of::<NodeValue>()
+                    size_of::<NodeValue>(),
                 )
             }
         }
-        ocx.header.set_operation_done(1);
+        ocx.header.set_operation_done(true);
         OK
     }
 
     pub fn get_node_value(&self, ocx: &mut OperationContext) -> ReturnCode {
-        if ocx.header.pathcompressed_child() == 1 {
+        if ocx.header.pathcompressed_child() {
             return self.get_node_value_pc(ocx);
         }
 
@@ -226,12 +228,12 @@ impl NodeHeader {
                 copy_memory_from(
                     self.as_raw_char().add(self.get_offset_node_value()),
                     ocx.get_return_value_mut() as *mut NodeValue,
-                    size_of::<NodeValue>()
+                    size_of::<NodeValue>(),
                 );
             }
         }
 
-        ocx.header.set_operation_done(1);
+        ocx.header.set_operation_done(true);
         OK
     }
 
@@ -239,7 +241,7 @@ impl NodeHeader {
         let top_node: &mut TopNode = self.as_top_node_mut();
 
         if top_node.type_flag() == Invalid || top_node.type_flag() == InnerNode {
-            ocx.header.set_performed_put(1);
+            ocx.header.set_performed_put(true);
         }
 
         if ocx.input_value.is_some() {
@@ -251,14 +253,14 @@ impl NodeHeader {
         } else {
             self.as_top_node_mut().set_type_flag(LeafNodeEmpty);
         }
-        ocx.header.set_operation_done(1);
+        ocx.header.set_operation_done(true);
         OK
     }
 
     pub fn register_jump_context(&mut self, ctx: &mut ContainerTraversalContext, ocx: &mut OperationContext) {
         let jump_context: &mut JumpContext = ocx.get_jump_context_mut();
         if self.as_top_node().jump_successor() == 1 {
-            jump_context.predecessor = Some(unsafe { Box::from_raw(self.as_raw_mut()) });//AtomicHeader::new_from_pointer(self.as_raw_mut());
+            jump_context.predecessor = Some(unsafe { Box::from_raw(self.as_raw_mut()) }); //AtomicHeader::new_from_pointer(self.as_raw_mut());
             jump_context.sub_nodes_seen = 0;
             jump_context.top_node_predecessor_offset_absolute = ctx.current_container_offset;
         } else {
@@ -268,17 +270,15 @@ impl NodeHeader {
 
     pub fn call_top_node(&mut self, rqc: &mut RangeQueryContext, hyperion_callback: HyperionCallback<NodeValue>) -> bool {
         match self.as_top_node().type_flag() {
-            LeafNodeEmpty => {
-                hyperion_callback(&mut rqc.current_key, rqc.current_key_offset + 1, &mut AtomicNodeValue::new())
-            },
+            LeafNodeEmpty => hyperion_callback(&mut rqc.current_key, rqc.current_key_offset + 1, &mut AtomicNodeValue::new()),
             LeafNodeWithValue => unsafe {
                 hyperion_callback(
                     &mut rqc.current_key,
                     rqc.current_key_offset + 1,
-                    &mut AtomicNodeValue::new_from_pointer(self.as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue)
+                    &mut AtomicNodeValue::new_from_pointer(self.as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue),
                 )
             },
-            Invalid | InnerNode => true
+            Invalid | InnerNode => true,
         }
     }
 
@@ -291,10 +291,10 @@ impl NodeHeader {
                 hyperion_callback(
                     &mut range_query_context.current_key,
                     range_query_context.current_key_offset + 2,
-                    &mut AtomicNodeValue::new_from_pointer(self.as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue)
+                    &mut AtomicNodeValue::new_from_pointer(self.as_raw_mut().add(self.get_offset_node_value()) as *mut NodeValue),
                 )
             },
-            Invalid | InnerNode => true
+            Invalid | InnerNode => true,
         }
     }
 
@@ -329,29 +329,32 @@ impl NodeHeader {
     }
 
     pub fn safe_path_compressed_context(&mut self, ocx: &mut OperationContext) {
-        let pc_node = self.as_path_compressed();
+        let pc_node: &PathCompressedNodeHeader = self.as_path_compressed();
         ocx.path_compressed_ejection_context = Some(PathCompressedEjectionContext::default());
 
         if pc_node.value_present() == 1 {
             unsafe {
                 copy(
-                    (pc_node as *const PathCompressedNodeHeader as *const c_void).add(size_of::<PathCompressedNodeHeader>()).add(size_of::<NodeValue>()) as *const u8,
+                    (pc_node as *const PathCompressedNodeHeader as *const c_void)
+                        .add(size_of::<PathCompressedNodeHeader>())
+                        .add(size_of::<NodeValue>()) as *const u8,
                     ocx.path_compressed_ejection_context.as_mut().unwrap().partial_key.as_mut_ptr() as *mut u8,
-                    pc_node.size() as usize - (size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>())
+                    pc_node.size() as usize - (size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>()),
                 );
                 copy(
-                    (pc_node as *const PathCompressedNodeHeader as *const c_void).add(size_of::<PathCompressedNodeHeader>()).add(size_of::<NodeValue>()) as *const u8,
+                    (pc_node as *const PathCompressedNodeHeader as *const c_void)
+                        .add(size_of::<PathCompressedNodeHeader>())
+                        .add(size_of::<NodeValue>()) as *const u8,
                     &mut ocx.path_compressed_ejection_context.as_mut().unwrap().node_value as *mut NodeValue as *mut u8,
-                    size_of::<NodeValue>()
+                    size_of::<NodeValue>(),
                 );
             }
-        }
-        else {
+        } else {
             unsafe {
                 copy(
                     (pc_node as *const PathCompressedNodeHeader as *const c_void).add(size_of::<PathCompressedNodeHeader>()) as *const u8,
                     ocx.path_compressed_ejection_context.as_mut().unwrap().partial_key.as_mut_ptr() as *mut u8,
-                    pc_node.size() as usize - size_of::<PathCompressedNodeHeader>()
+                    pc_node.size() as usize - size_of::<PathCompressedNodeHeader>(),
                 );
             }
         }
@@ -360,28 +363,32 @@ impl NodeHeader {
             copy(
                 (pc_node as *const PathCompressedNodeHeader as *const c_void) as *const u8,
                 &mut ocx.path_compressed_ejection_context.as_mut().unwrap().path_compressed_node_header as *mut PathCompressedNodeHeader as *mut u8,
-                size_of::<PathCompressedNodeHeader>()
+                size_of::<PathCompressedNodeHeader>(),
             );
         }
     }
 }
 
-pub fn update_path_compressed_node(mut node: Box<NodeHeader>, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> Box<NodeHeader> {
+pub fn update_path_compressed_node(mut node: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> *mut NodeHeader {
     if let Some(_) = &mut ocx.input_value {
-        let mut pc_node: &mut PathCompressedNodeHeader = node.as_path_compressed_mut();
+        let mut pc_node: &mut PathCompressedNodeHeader = unsafe { (*node).as_path_compressed_mut() };
         let mut value: *mut c_void = unsafe { (pc_node as *mut PathCompressedNodeHeader as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) };
 
         if pc_node.value_present() == 0 {
-            node = ocx.new_expand(ctx, size_of::<NodeValue>() as u32);
+            node = ocx.new_expand(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
             let mut embedded_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
             let mut root_container: &mut Container = embedded_context.root_container.as_mut();
-            unsafe { root_container.wrap_shift_container(value, size_of::<NodeValue>()); }
+            unsafe {
+                root_container.wrap_shift_container(value, size_of::<NodeValue>());
+            }
             root_container.update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
             ocx.embedded_traversal_context = Some(embedded_context);
-            pc_node = node.as_path_compressed_mut();
+            pc_node = unsafe { (*node).as_path_compressed_mut() };
             value = unsafe { (pc_node as *mut PathCompressedNodeHeader as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) };
         }
-        unsafe {  copy_memory_from(value, ocx.input_value.as_mut().unwrap().as_mut() as *mut NodeValue, size_of::<NodeValue>()); }
+        unsafe {
+            copy_memory_from(value, ocx.input_value.as_mut().unwrap().as_mut() as *mut NodeValue, size_of::<NodeValue>());
+        }
         pc_node.set_value_present(1);
     }
     node
@@ -394,13 +401,12 @@ pub fn eject_container(mut node: Box<NodeHeader>, ocx: &mut OperationContext, ct
     let emb_container: &mut AtomicEmbContainer = &mut emb_context.embedded_stack[0];
 
     let child_offset: usize = node.get_offset_child_container();
-    let embedded_container_offset = unsafe {
-        (emb_context.root_container.as_mut() as *mut Container as *mut c_void).offset_from(emb_container.get_as_mut_memory()) as usize
-    };
+    let embedded_container_offset: usize =
+        unsafe { (emb_context.root_container.as_mut() as *mut Container as *mut c_void).offset_from(emb_container.get_as_mut_memory()) as usize };
     let em_csize: u32 = unsafe { (*(emb_container.get())).size() as u32 };
     let ro_csize: u32 = emb_context.root_container.as_mut().size();
     assert!(ro_csize > em_csize);
-    let ro_free_size_left = emb_context.root_container.as_mut().free_bytes();
+    let ro_free_size_left: u8 = emb_context.root_container.as_mut().free_bytes();
 
     let mut container_ptr: HyperionPointer = initialize_ejected_container(ocx.arena.as_mut().unwrap().as_mut(), em_csize);
     let p_new: *mut Container = get_pointer(ocx.arena.as_mut().unwrap(), &mut container_ptr, 1, ctx.first_char) as *mut Container;
@@ -451,11 +457,14 @@ pub fn eject_container(mut node: Box<NodeHeader>, ocx: &mut OperationContext, ct
         let new_free_size: u32 = (ro_free_size_left as u32 - delta as u32) % container_increment as u32;
 
         assert_eq!(emb_context.embedded_container_depth, 0);
-        emb_context.root_container_pointer = reallocate(ocx.arena.as_mut().unwrap().as_mut(), &mut emb_context.root_container_pointer, tgt_size as usize, ocx.chained_pointer_hook);
+        emb_context.root_container_pointer =
+            reallocate(ocx.arena.as_mut().unwrap().as_mut(), &mut emb_context.root_container_pointer, tgt_size as usize, ocx.chained_pointer_hook);
         unsafe {
-            emb_context.root_container = Box::from_raw(
-                get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut emb_context.root_container_pointer, 1, ocx.chained_pointer_hook) as *mut Container
-            );
+            emb_context.root_container =
+                Box::from_raw(
+                    get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut emb_context.root_container_pointer, 1, ocx.chained_pointer_hook)
+                        as *mut Container,
+                );
         }
         emb_context.root_container.set_free_size_left(new_free_size);
         emb_context.root_container.as_mut().set_size(tgt_size);
@@ -467,28 +476,100 @@ pub fn add_embedded_container(mut node: Box<NodeHeader>, ocx: &mut OperationCont
     ocx.header.set_next_container_valid(2);
     let offset_child_container: usize = node.as_mut().get_offset_child_container();
     node = ocx.new_expand_embedded(ctx, size_of::<EmbeddedContainer>() as u32);
-    let mut emb_context = ocx.embedded_traversal_context.take().unwrap();
+    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
     unsafe {
-        emb_context.next_embedded_container = Box::from_raw(
-            (node.as_mut() as *mut NodeHeader as *mut c_void).add(offset_child_container) as *mut EmbeddedContainer
-        );
+        let base_ptr: *mut c_void = node.as_mut() as *mut NodeHeader as *mut c_void;
+        emb_context.next_embedded_container = Box::from_raw(base_ptr.add(offset_child_container) as *mut EmbeddedContainer);
 
         emb_context.root_container.as_mut().wrap_shift_container(
             emb_context.next_embedded_container.as_mut() as *mut EmbeddedContainer as *mut c_void,
-            size_of::<EmbeddedContainer>()
+            size_of::<EmbeddedContainer>(),
         );
     }
     ctx.current_container_offset += offset_child_container as i32;
     node.as_mut().as_sub_node_mut().set_child_container(ChildLinkType::EmbeddedContainer);
     ocx.embedded_traversal_context = Some(emb_context);
     ocx.safe_sub_node_jump_table_context(ctx);
-    let mut emb_context = ocx.embedded_traversal_context.take().unwrap();
-    emb_context.embedded_stack[emb_context.embedded_container_depth as usize] = AtomicEmbContainer::new_from_pointer(emb_context.next_embedded_container.as_mut() as *mut EmbeddedContainer);
+    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
+    emb_context.embedded_stack[emb_context.embedded_container_depth as usize] =
+        AtomicEmbContainer::new_from_pointer(emb_context.next_embedded_container.as_mut() as *mut EmbeddedContainer);
     emb_context.embedded_container_depth += 1;
     ocx.next_container_pointer = None;
     emb_context.root_container.update_space_usage(size_of::<EmbeddedContainer>() as i16, ocx, ctx);
     ocx.embedded_traversal_context = Some(emb_context);
 }
+
+pub fn create_node_embedded(mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, container_depth: u8, set_key_after_creation: bool, add_value_after_creation: bool, key_delta: u8) -> *mut NodeHeader {
+    let absolute_key: u8 = if container_depth == 0 { ctx.first_char } else { ctx.second_char };
+    let input_memory_consumption: usize = if ocx.input_value.is_some() { add_value_after_creation as usize * size_of::<NodeValue>() } else { 0 };
+    let required: usize = size_of::<NodeHeader>() + set_key_after_creation as usize + input_memory_consumption;
+    node_head = ocx.new_expand_embedded(ctx, required as u32).as_raw_mut();
+
+    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
+    let amount: i32 = unsafe {
+        emb_context.root_container.as_mut().size() as i32 - (emb_context.root_container.as_mut().free_bytes() as i32 + ((emb_context.root_container.as_mut() as *mut Container as *mut c_void).offset_from(node_head as *mut c_void) as i32))
+    };
+
+    if amount > 0 {
+        unsafe { shift_container(node_head as *mut c_void, required, amount as usize); }
+    }
+
+    unsafe {
+        (*node_head).as_top_node_mut().set_type_flag(if add_value_after_creation && input_memory_consumption != 0 { LeafNodeWithValue } else { InnerNode });
+        (*node_head).as_top_node_mut().set_container_type(container_depth);
+    }
+    emb_context.root_container.as_mut().update_space_usage(required as i16, ocx, ctx);
+    ocx.embedded_traversal_context = Some(emb_context);
+
+    if set_key_after_creation {
+        unsafe { (*(node_head as *mut Node)).set_nodes_key2(ocx, ctx, true, absolute_key); }
+    }
+    else {
+        unsafe { (*node_head).as_top_node_mut().set_delta(key_delta); }
+        let mut successor_ptr: Option<Box<Node>> = None;
+        let skipped: i32 = get_successor_embedded(node_head, &mut successor_ptr, ocx, ctx);
+        if skipped > 0 {
+            let mut successor: &mut Box<Node> = successor_ptr.as_mut().unwrap();
+            let diff: u8 = if successor.header.as_top_node().delta() == 0 {
+                successor.as_mut().stored_value - key_delta
+            }
+            else {
+                successor.header.as_top_node().delta() - key_delta
+            };
+            update_successor_key(successor.as_mut() as *mut Node, diff, absolute_key, skipped as u32, ocx, ctx);
+        }
+    }
+
+    if add_value_after_creation {
+        unsafe { (*node_head).set_node_value(ocx); }
+    }
+
+    if ctx.header.end_operation() && container_depth > 0 {
+        unsafe {
+            (*node_head).as_sub_node_mut().set_child_container(ChildLinkType::None);
+        }
+        embed_or_link_child(node_head, ocx, ctx);
+    }
+    ocx.header.set_performed_put(true);
+    node_head
+}
+
+pub fn embed_or_link_child(node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> *mut NodeHeader {
+    todo!()
+}
+
+pub fn get_child_link_container_pointer(node_head: *mut NodeHeader, childcon: &mut Option<Box<HyperionPointer>>, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> ReturnCode {
+    todo!()
+}
+
+pub fn get_successor_embedded(node_head: *mut NodeHeader, successor: &mut Option<Box<Node>>, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> i32 {
+    todo!()
+}
+
+pub fn get_successor(node_head: *mut NodeHeader, successor: &mut Option<Box<Node>>, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> ReturnCode {
+    todo!()
+}
+
 
 #[bitfield(u8, order = Msb)]
 pub struct PathCompressedNodeHeader {
@@ -496,7 +577,7 @@ pub struct PathCompressedNodeHeader {
     pub size: u8,
 
     #[bits(1)]
-    pub value_present: u8
+    pub value_present: u8,
 }
 
 impl PathCompressedNodeHeader {

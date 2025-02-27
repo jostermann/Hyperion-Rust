@@ -2,7 +2,7 @@ use bitfield_struct::bitfield;
 
 use crate::hyperion::components::node::NodeType;
 
-#[derive(Debug)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Ord)]
 pub enum ChildLinkType {
     None = 0,
     Link = 1,

@@ -1,13 +1,20 @@
-use crate::hyperion::components::container::{get_container_link_size, shift_container, Container, EmbeddedContainer, RootContainerEntry, CONTAINER_MAX_EMBEDDED_DEPTH};
-use crate::hyperion::components::node::NodeValue;
-use crate::hyperion::components::node_header::{NodeHeader, PathCompressedNodeHeader};
+use crate::hyperion::components::container::{shift_container, Container, EmbeddedContainer, RootContainerEntry, CONTAINER_MAX_EMBEDDED_DEPTH};
+use crate::hyperion::components::node::NodeType::LeafNodeWithValue;
+use crate::hyperion::components::node::{Node, NodeValue};
+use crate::hyperion::components::node_header::{create_node_embedded, embed_or_link_child, get_child_link_container_pointer, update_path_compressed_node, NodeHeader, PathCompressedNodeHeader};
+use crate::hyperion::components::return_codes::ReturnCode;
+use crate::hyperion::components::return_codes::ReturnCode::OK;
+use crate::hyperion::components::sub_node::ChildLinkType;
+use crate::hyperion::components::sub_node::ChildLinkType::PathCompressed;
 use crate::hyperion::internals::atomic_pointer::{AtomicChar, AtomicContainer, AtomicEmbContainer, AtomicHyperionPointer, Atomicu8};
 use crate::memorymanager::api::{get_pointer, reallocate, Arena, HyperionPointer};
 use bitfield_struct::bitfield;
 use std::ffi::c_void;
 use std::ops::DerefMut;
-use std::ptr::{null_mut, write_bytes};
-use libc::setreuid;
+use std::ptr::write_bytes;
+use crate::hyperion::components::context::TraversalType::{EmptyOneCharTopNode, EmptyTwoCharTopNode, EmptyTwoCharTopNodeInFirstCharScope, FilledOneCharTopNode, FilledTwoCharTopNode, FilledTwoCharTopNodeInFirstCharScope, Invalid};
+
+pub const KEY_DELTA_STATES: usize = 7;
 
 #[derive(Debug)]
 pub enum OperationCommand {
@@ -44,24 +51,35 @@ pub struct TraversalContext {
     pub hyperion_pointer: HyperionPointer,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum TraversalType {
+    EmptyOneCharTopNode,
+    FilledOneCharTopNode,
+    EmptyTwoCharTopNode,
+    FilledTwoCharTopNode,
+    EmptyTwoCharTopNodeInFirstCharScope,
+    FilledTwoCharTopNodeInFirstCharScope,
+    Invalid
+}
+
 #[bitfield(u8, order = Msb)]
 pub struct ContainerTraversalHeader {
     #[bits(1)]
     pub node_type: u8,
     #[bits(1)]
-    pub two_chars: u8,
+    pub two_chars: bool,
     #[bits(1)]
-    pub in_first_char_scope: u8,
+    pub in_first_char_scope: bool,
     #[bits(1)]
     pub container_type: u8,
     #[bits(1)]
-    pub last_top_char_set: u8,
+    pub last_top_char_set: bool,
     #[bits(1)]
-    pub last_sub_char_set: u8,
+    pub last_sub_char_set: bool,
     #[bits(1)]
-    pub end_operation: u8,
+    pub end_operation: bool,
     #[bits(1)]
-    pub force_shift_before_insert: u8,
+    pub force_shift_before_insert: bool,
 }
 
 pub struct ContainerTraversalContext {
@@ -79,7 +97,20 @@ impl ContainerTraversalContext {
         self.last_top_char_seen = 0;
         self.last_sub_char_seen = 0;
         self.current_container_offset = 0;
-        self.header.set_in_first_char_scope(0);
+        self.header.set_in_first_char_scope(true);
+    }
+
+    pub fn as_combined_header(&mut self) -> TraversalType {
+        let bit_pattern = (self.header.container_type(), self.header.in_first_char_scope(), self.header.two_chars(), self.header.node_type());
+        match bit_pattern {
+            (0, false, false, 0) => EmptyOneCharTopNode,
+            (0, false, false, 1) => FilledOneCharTopNode,
+            (0, false, true, 0) => EmptyTwoCharTopNode,
+            (0, false, true, 1) => FilledTwoCharTopNode,
+            (0, true, true, 0) => EmptyTwoCharTopNodeInFirstCharScope,
+            (0, true, true, 1) => FilledTwoCharTopNodeInFirstCharScope,
+            _ => Invalid
+        }
     }
 }
 
@@ -163,11 +194,11 @@ pub struct OperationContextHeader {
     #[bits(2)]
     pub next_container_valid: u8,
     #[bits(1)]
-    pub operation_done: u8,
+    pub operation_done: bool,
     #[bits(1)]
-    pub performed_put: u8,
+    pub performed_put: bool,
     #[bits(1)]
-    pub pathcompressed_child: u8,
+    pub pathcompressed_child: bool,
     #[bits(1)]
     __: u8,
 }
@@ -333,8 +364,6 @@ impl OperationContext {
                         as *mut Container);
             }
 
-            self.arena = Some(arena);
-
             unsafe {
                 let p_new: *mut c_void = (embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void)
                     .add(old_size as usize);
@@ -377,6 +406,7 @@ impl OperationContext {
         let mut raw_container_pointer: *mut Container = embedded_traversal_context.root_container.as_mut() as *mut Container;
 
         self.embedded_traversal_context = Some(embedded_traversal_context);
+        self.arena = Some(arena);
         unsafe {
             Box::from_raw(
                 (raw_container_pointer as *mut char)
@@ -419,5 +449,239 @@ impl OperationContext {
             return self.new_expand(ctx, required);
         }
         self.new_expand_embedded(ctx, required)
+    }
+
+    pub fn scan_put_embedded(&mut self, ctx: &mut ContainerTraversalContext) -> ReturnCode {
+
+        //     0000
+        //     #[bits(1)]
+        //     pub container_type: u8,
+        //     #[bits(1)]
+        //     pub in_first_char_scope: u8,
+        //     #[bits(1)]
+        //     pub two_chars: u8,
+        //     #[bits(1)]
+        //     pub node_type: u8,
+
+        // 0 -> 0000 + Top node (0) + not in first char scope (0) + one char (0) + Invalid (0)
+        // 1 -> 0000 + Top node (0) + not in first char scope (0) + one char (0) + InnerNode (1)
+        // 2 -> 0000 + Top node (0) + not in first char scope (0) + two chars (1) + Invalid (0)
+        // 3 -> 0000 + Top node (0) + not in first char scope (0) + two chars (1) + InnerNode (1)
+        // 6 -> 0000 + Top node (0) + in first char scope (1) + two chars (1) + Invalid (0)
+        // 7 -> 0000 + Top node (0) + in first char scope (1) + two chars (1) + InnerNode (1)
+
+        let switch: TraversalType = ctx.as_combined_header();
+        let mut key: u8;
+        ctx.header.set_node_type(1);
+
+        loop {
+            let mut node_header: *mut NodeHeader = unsafe {
+                (self.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut() as *mut EmbeddedContainer as *mut char)
+                    .add(ctx.current_container_offset as usize) as *mut NodeHeader
+            };
+
+            if ctx.current_container_offset >= self.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().size() as i32 {
+                // ran out of container boundaries
+                // Emulate an empty node
+                // Container size left will be zero and will be updated
+                ctx.header.set_node_type(0);
+            }
+
+            match switch {
+                EmptyOneCharTopNode => {
+                    // Empty node, not two chars
+                    if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                        create_node_embedded(node_header, self, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                    }
+                    else {
+                        create_node_embedded(node_header, self, ctx, 0, true, true, 0);
+                    }
+                    return OK;
+                },
+                FilledOneCharTopNode => {
+                    // Node found, single char op
+                    // Not in first char scope
+                    let node_header_ref: &mut NodeHeader = unsafe { node_header.as_mut().unwrap() };
+
+                    if node_header_ref.as_top_node().container_type() == 0 {
+                        // Don't process jumps for embedded nodes
+                        key = unsafe { (*(node_header as *mut Node)).get_top_node_key(ctx) };
+
+                        if key < ctx.first_char {
+                            ctx.header.set_last_top_char_set(true);
+                            ctx.last_top_char_seen = key;
+                        }
+                        else if key == ctx.first_char {
+                            if node_header_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
+                                node_header = self.new_expand_embedded(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
+                                let target: *mut c_void = unsafe {
+                                    (node_header as *mut c_void)
+                                        .add((*node_header).get_offset_node_value())
+                                };
+                                let mut emb_context: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
+                                unsafe {
+                                    emb_context.root_container.as_mut().wrap_shift_container(target, size_of::<NodeValue>());
+                                }
+                                emb_context.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
+                                self.embedded_traversal_context = Some(emb_context);
+                            }
+                            return unsafe { (*node_header).set_node_value(self) };
+                        }
+                        else {
+                            // Need to shift and insert
+                            ctx.header.set_force_shift_before_insert(true);
+                            ctx.header.set_in_first_char_scope(true);
+                            if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                                create_node_embedded(node_header, self, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                            }
+                            else {
+                                create_node_embedded(node_header, self, ctx, 0, true, true, 0);
+                            }
+                            return OK;
+                        }
+                        ctx.current_container_offset += unsafe { (*node_header).get_offset_sub_node() as i32 };
+                        continue;
+                    }
+                    ctx.current_container_offset += unsafe { (*node_header).get_offset_sub_node() as i32 };
+                    continue;
+                },
+                EmptyTwoCharTopNode => {
+                    // Empty node, two chars, not in first char scope
+                    if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                        // Create a relative first char key
+                        // Add value afterward
+                        node_header = create_node_embedded(node_header, self, ctx, 0, false, false, ctx.first_char - ctx.last_top_char_seen);
+                    }
+                    else {
+                        // Create an absolute key
+                        // Add value afterward
+                        node_header = create_node_embedded(node_header, self, ctx, 0, true, false, 0);
+                    }
+                    ctx.header.set_in_first_char_scope(true);
+                    ctx.current_container_offset += unsafe { (*node_header).get_offset_sub_node() as i32 };
+                    continue;
+                },
+                FilledTwoCharTopNode => {
+                    // Valid node found
+                    // Two char operation, not in first char scope
+                    let node_header_ref: &mut NodeHeader = unsafe { node_header.as_mut().unwrap() };
+
+                    if node_header_ref.as_top_node().container_type() == 0 {
+                        // Don't process jumps for embedded nodes
+                        key = unsafe { (*(node_header as *mut Node)).get_top_node_key(ctx) };
+
+                        if key < ctx.first_char {
+                            ctx.header.set_last_top_char_set(true);
+                            ctx.last_top_char_seen = key;
+                        }
+                        else if key == ctx.first_char {
+                            ctx.header.set_in_first_char_scope(true);
+                        }
+                        else {
+                            // Need to shift and insert
+                            ctx.header.set_force_shift_before_insert(true);
+                            ctx.header.set_in_first_char_scope(true);
+                            if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                                node_header = create_node_embedded(node_header, self, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                            }
+                            else {
+                                node_header = create_node_embedded(node_header, self, ctx, 0, true, false, 0);
+                            }
+                        }
+                        ctx.current_container_offset += unsafe { (*node_header).get_offset_sub_node() as i32 };
+                        continue;
+                    }
+                    ctx.current_container_offset += unsafe { (*node_header).get_offset_sub_node() as i32 };
+                    continue;
+                },
+                EmptyTwoCharTopNodeInFirstCharScope => {
+                    // Empty node, two chars, in first char scope
+                    // create a new node with container depth 1
+                    if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                        create_node_embedded(node_header, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                    }
+                    else {
+                        create_node_embedded(node_header, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                    }
+                    return OK;
+                },
+                FilledTwoCharTopNodeInFirstCharScope => {
+                    // Node found, two char operation, in first char scope
+                    let node_header_ref: &mut NodeHeader = unsafe { node_header.as_mut().unwrap() };
+
+                    if node_header_ref.as_top_node().container_type() == 1 {
+                        // Still in first char scope
+                        key = unsafe { (*(node_header as *mut Node)).get_top_node_key(ctx) };
+
+                        if key < ctx.first_char {
+                            ctx.header.set_last_top_char_set(true);
+                            ctx.last_top_char_seen = key;
+                            ctx.current_container_offset += unsafe { (*node_header).get_offset_sub_node() as i32 };
+                            continue;
+                        }
+                        else if key == ctx.second_char {
+                            if ctx.header.end_operation() {
+                                if node_header_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
+                                    node_header = self.new_expand_embedded(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
+                                    let target: *mut c_void = unsafe {
+                                        (node_header as *mut c_void)
+                                            .add((*node_header).get_offset_node_value())
+                                    };
+                                    let mut emb_context: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
+                                    unsafe {
+                                        emb_context.root_container.as_mut().wrap_shift_container(target, size_of::<NodeValue>());
+                                    }
+                                    emb_context.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
+                                    self.embedded_traversal_context = Some(emb_context);
+                                }
+                                return unsafe { (*node_header).set_node_value(self) };
+                            }
+                            else {
+                                let node_header_ref: &mut NodeHeader = unsafe { node_header.as_mut().unwrap() };
+                                if node_header_ref.as_sub_node().child_container() == PathCompressed {
+                                    if !node_header_ref.compare_path_compressed_node(self) {
+                                        node_header = update_path_compressed_node(node_header, self, ctx);
+                                        return OK;
+                                    }
+                                    else {
+                                        node_header_ref.safe_path_compressed_context(self);
+                                    }
+                                }
+                                else if node_header_ref.as_sub_node().child_container() == ChildLinkType::None {
+                                    embed_or_link_child(node_header, self, ctx);
+                                }
+                                else {
+                                    let mut next_container_pointer: Option<Box<HyperionPointer>> = self.next_container_pointer.take();
+                                    get_child_link_container_pointer(node_header, &mut next_container_pointer, self, ctx);
+                                    self.next_container_pointer = next_container_pointer;
+                                }
+                                return OK;
+                            }
+                        }
+                        else {
+                            ctx.header.set_force_shift_before_insert(true);
+                            if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                                create_node_embedded(node_header, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                            }
+                            else {
+                                create_node_embedded(node_header, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                            }
+                            return OK;
+                        }
+                    }
+                    else {
+                        ctx.header.set_force_shift_before_insert(true);
+                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node_embedded(node_header, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        }
+                        else {
+                            create_node_embedded(node_header, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                        }
+                        return OK;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }

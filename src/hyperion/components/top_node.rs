@@ -14,10 +14,10 @@ pub struct TopNode {
     pub delta: u8,
 
     #[bits(1)]
-    pub jump_successor: u8,
+    pub jump_successor_present: bool,
 
     #[bits(1)]
-    pub jump_table: u8
+    pub jump_table_present: bool
 }
 
 impl TopNode {

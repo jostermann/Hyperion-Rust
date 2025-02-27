@@ -1,7 +1,7 @@
 use crate::hyperion::components::container::{shift_container, Container, EmbeddedContainer, RootContainerEntry, CONTAINER_MAX_EMBEDDED_DEPTH};
 use crate::hyperion::components::node::NodeType::LeafNodeWithValue;
-use crate::hyperion::components::node::{Node, NodeValue};
-use crate::hyperion::components::node_header::{create_node_embedded, embed_or_link_child, get_child_link_container_pointer, update_path_compressed_node, NodeHeader, PathCompressedNodeHeader};
+use crate::hyperion::components::node::{Node, NodeType, NodeValue};
+use crate::hyperion::components::node_header::{create_node_embedded, embed_or_link_child, get_child_container_pointer, update_path_compressed_node, NodeHeader, PathCompressedNodeHeader};
 use crate::hyperion::components::return_codes::ReturnCode;
 use crate::hyperion::components::return_codes::ReturnCode::OK;
 use crate::hyperion::components::sub_node::ChildLinkType;
@@ -11,12 +11,12 @@ use crate::memorymanager::api::{get_pointer, reallocate, Arena, HyperionPointer}
 use bitfield_struct::bitfield;
 use std::ffi::c_void;
 use std::ops::DerefMut;
-use std::ptr::write_bytes;
+use std::ptr::{write_bytes, NonNull};
 use crate::hyperion::components::context::TraversalType::{EmptyOneCharTopNode, EmptyTwoCharTopNode, EmptyTwoCharTopNodeInFirstCharScope, FilledOneCharTopNode, FilledTwoCharTopNode, FilledTwoCharTopNodeInFirstCharScope, Invalid};
 
 pub const KEY_DELTA_STATES: usize = 7;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum OperationCommand {
     Put = 0,
     Get = 1,
@@ -139,7 +139,7 @@ pub struct ContainerInjectionContext {
 
 pub struct EmbeddedTraversalContext {
     pub root_container: Box<Container>,
-    pub next_embedded_container: Box<EmbeddedContainer>,
+    pub next_embedded_container: Option<Box<EmbeddedContainer>>,
     pub embedded_stack: [AtomicEmbContainer; CONTAINER_MAX_EMBEDDED_DEPTH],
     pub next_embedded_container_offset: i32,
     pub embedded_container_depth: i32,
@@ -174,6 +174,15 @@ impl JumpContext {
         self.sub_nodes_seen = 0;
         self.top_node_key = 0;
     }
+
+    pub fn duplicate(&self) -> JumpContext {
+        JumpContext {
+            predecessor: self.predecessor.as_ref().map(|node| Box::new(node.deep_copy())),
+            top_node_predecessor_offset_absolute: self.top_node_predecessor_offset_absolute.clone(),
+            sub_nodes_seen: self.sub_nodes_seen.clone(),
+            top_node_key: self.top_node_key.clone(),
+        }
+    }
 }
 
 pub struct RangeQueryContext {
@@ -187,12 +196,39 @@ pub struct RangeQueryContext {
     pub stack: [Option<TraversalContext>; 128],
 }
 
+#[derive(Debug)]
+pub enum ContainerValidTypes {
+    Invalid = 0,
+    ContainerValid = 1,
+    EmbeddedContainerValid = 2
+}
+
+impl ContainerValidTypes {
+    /// Transforms its states into a 2 bit representation.
+    pub(crate) const fn into_bits(self) -> u8 {
+        self as _
+    }
+
+    /// Transforms its states from an 8 bit value into a named state.
+    ///
+    /// # Panics
+    /// Panics if an invalid container valid type was found.
+    pub(crate) const fn from_bits(value: u8) -> Self {
+        match value {
+            0 => ContainerValidTypes::Invalid,
+            1 => ContainerValidTypes::ContainerValid,
+            2 => ContainerValidTypes::EmbeddedContainerValid,
+            _ => panic!("Use of undefined container valid type")
+        }
+    }
+}
+
 #[bitfield(u8, order = Msb)]
 pub struct OperationContextHeader {
     #[bits(2)]
     pub command: OperationCommand,
     #[bits(2)]
-    pub next_container_valid: u8,
+    pub next_container_valid: ContainerValidTypes,
     #[bits(1)]
     pub operation_done: bool,
     #[bits(1)]
@@ -253,7 +289,7 @@ impl OperationContext {
         let mut sub_jump_table: JumpTableSubContext = self.jump_table_sub_context.take().unwrap();
 
         if let Some(node) = sub_jump_table.top_node.as_deref_mut() {
-            if node.as_top_node().jump_table() == 1 && self.embedded_traversal_context.as_mut().unwrap().embedded_container_depth == 0 {
+            if node.as_top_node().jump_table_present() && self.embedded_traversal_context.as_mut().unwrap().embedded_container_depth == 0 {
                 sub_jump_table.root_container_sub_char_set = 1;
                 sub_jump_table.root_container_sub_char = char::from(ctx.second_char);
             }
@@ -277,7 +313,7 @@ impl OperationContext {
                     if let Some(top_node) = jump_context.top_node.as_deref_mut() {
                         unsafe {
                             sublevel_ref_toplevel_node_offset =
-                                (root_container as *mut Container as *mut c_void).offset_from(top_node as *mut NodeHeader as *mut c_void) as i32;
+                                (top_node as *mut NodeHeader as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32;
                         }
                     }
                 }
@@ -341,14 +377,14 @@ impl OperationContext {
                     if let Some(top_node) = jump_context.top_node.as_deref_mut() {
                         unsafe {
                             sublevel_ref_toplevel_node_offset =
-                                (root_container as *mut Container as *mut c_void).offset_from(top_node as *mut NodeHeader as *mut c_void) as i32;
+                                (top_node as *mut NodeHeader as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32;
                         }
                     }
                 }
 
                 unsafe {
                     for i in (i..embedded_traversal_context.next_embedded_container_offset as usize).rev() {
-                        embedded_stack[i] = (root_container as *mut Container as *mut c_void).offset_from(embedded_traversal_context.embedded_stack[i].get_as_mut_memory()) as i32;
+                        embedded_stack[i] = (embedded_traversal_context.embedded_stack[i].get_as_mut_memory()).offset_from(root_container as *mut Container as *mut c_void) as i32;
                     }
                 }
                 old_size = root_container.size();
@@ -368,9 +404,11 @@ impl OperationContext {
                 let p_new: *mut c_void = (embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void)
                     .add(old_size as usize);
                 write_bytes(p_new as *mut u8, 0, (new_size - old_size) as usize);
-                embedded_traversal_context.next_embedded_container = Box::from_raw(
-                    (embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void)
+                embedded_traversal_context.next_embedded_container = Some(
+                    Box::from_raw(
+                        (embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void)
                         .add(embedded_traversal_context.next_embedded_container_offset as usize) as *mut EmbeddedContainer
+                    )
                 );
 
                 let root_container: &mut Container = embedded_traversal_context.root_container.deref_mut();
@@ -432,7 +470,7 @@ impl OperationContext {
                 self.embedded_traversal_context.as_mut().unwrap().root_container.deref_mut().size() as usize -
                     (free_size_left + node_offset_to_jump + self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as usize));
 
-            (*node).as_top_node_mut().set_jump_successor(1);
+            (*node).as_top_node_mut().set_jump_successor_present(true);
             *((node as *mut u16).add((*node).get_offset_jump())) += jump_value;
             let mut etc: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
             let root_container: &mut Container = etc.root_container.as_mut();
@@ -476,11 +514,11 @@ impl OperationContext {
 
         loop {
             let mut node_header: *mut NodeHeader = unsafe {
-                (self.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut() as *mut EmbeddedContainer as *mut char)
+                (self.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer as *mut char)
                     .add(ctx.current_container_offset as usize) as *mut NodeHeader
             };
 
-            if ctx.current_container_offset >= self.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().size() as i32 {
+            if ctx.current_container_offset >= self.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut().size() as i32 {
                 // ran out of container boundaries
                 // Emulate an empty node
                 // Container size left will be zero and will be updated
@@ -651,9 +689,10 @@ impl OperationContext {
                                     embed_or_link_child(node_header, self, ctx);
                                 }
                                 else {
-                                    let mut next_container_pointer: Option<Box<HyperionPointer>> = self.next_container_pointer.take();
-                                    get_child_link_container_pointer(node_header, &mut next_container_pointer, self, ctx);
-                                    self.next_container_pointer = next_container_pointer;
+                                    let mut next_container: Box<HyperionPointer> = self.next_container_pointer.take().unwrap();
+                                    let mut next_container_pointer: Option<NonNull<HyperionPointer>> = NonNull::new(next_container.as_mut() as *mut HyperionPointer);
+                                    get_child_container_pointer(node_header, &mut next_container_pointer, self, ctx);
+                                    self.next_container_pointer = Some(next_container);
                                 }
                                 return OK;
                             }

@@ -96,7 +96,7 @@ impl Container {
     }
 
     pub unsafe fn wrap_shift_container(&mut self, start_shift: *mut c_void, shift_len: usize) {
-        let remaining_length = self.size() as i64 - ((self as *const Container as *const u8).offset_from(start_shift as *const u8) as u8 + self.free_bytes()) as i64;
+        let remaining_length = self.size() as i64 - ((start_shift as *const u8).offset_from(self as *const Container as *const u8) as u8 + self.free_bytes()) as i64;
         if remaining_length > 0 {
             shift_container(start_shift, shift_len, remaining_length as usize)
         }
@@ -112,7 +112,7 @@ impl Container {
 
         if node.is_some() {
             let node = node.as_deref_mut().unwrap();
-            if node.as_top_node().jump_table() == 1 {
+            if node.as_top_node().jump_table_present() {
                 let char_to_check =
                     if root_container_subchar_set > 0 {
                         root_container_subchar as u8

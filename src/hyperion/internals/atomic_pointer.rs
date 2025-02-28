@@ -79,12 +79,12 @@ pub type AtomicNodeValue = AtomicPointer<NodeValue>;
 
 pub const CONTAINER_SIZE_TYPE_0: usize = 32;
 
-pub fn initialize_container(arena: &mut AtomicArena) -> HyperionPointer {
-    let mut container_pointer: HyperionPointer = malloc(arena.borrow_mut(), CONTAINER_SIZE_TYPE_0);
-    let mut container: AtomicContainer =
-        AtomicContainer::new_from_pointer(get_pointer(arena.borrow_mut(), &mut container_pointer, 1, 0) as *mut Container);
-    container.borrow_mut().set_size(CONTAINER_SIZE_TYPE_0 as u32);
-    let container_head_size: i32 = container.borrow_mut().get_container_head_size();
-    container.borrow_mut().set_free_size_left((CONTAINER_SIZE_TYPE_0 as i32 - container_head_size) as u32);
+pub fn initialize_container(arena: &mut Arena) -> HyperionPointer {
+    let mut container_pointer: HyperionPointer = malloc(arena, CONTAINER_SIZE_TYPE_0);
+    let container: *mut Container = get_pointer(arena, &mut container_pointer, 1, 0) as *mut Container;
+    unsafe {
+        (*container).set_size(CONTAINER_SIZE_TYPE_0 as u32);
+        (*container).set_free_size_left(CONTAINER_SIZE_TYPE_0 as u32 - (*container).get_container_head_size() as u32);
+    }
     container_pointer
 }

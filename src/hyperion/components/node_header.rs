@@ -81,7 +81,7 @@ impl NodeHeader {
         unsafe { self.as_raw().add(self.get_offset_child_container()) as *const PathCompressedNodeHeader }
     }
 
-    pub fn as_raw_compressed_mut(&self) -> *mut PathCompressedNodeHeader {
+    pub fn as_raw_compressed_mut(&mut self) -> *mut PathCompressedNodeHeader {
         unsafe { self.as_raw().add(self.get_offset_child_container()) as *mut PathCompressedNodeHeader }
     }
 
@@ -89,7 +89,7 @@ impl NodeHeader {
         unsafe { self.as_raw_compressed().as_ref().unwrap() }
     }
 
-    pub fn as_path_compressed_mut(&self) -> &mut PathCompressedNodeHeader {
+    pub fn as_path_compressed_mut(&mut self) -> &mut PathCompressedNodeHeader {
         unsafe { self.as_raw_compressed_mut().as_mut().unwrap() }
     }
 
@@ -387,15 +387,34 @@ impl NodeHeader {
     }
 }
 
+pub fn delete_node(node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> ReturnCode {
+    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+    let size_deleted = if node_ref.as_top_node().type_flag() == LeafNodeWithValue { size_of::<NodeValue>() } else { 0 };
+    unsafe {
+        let container: *mut Container = ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container;
+        let dest: *mut c_void = (node_head as *mut c_void).add(node_ref.get_offset_node_value());
+        let src: *mut c_void = dest.add(size_of::<NodeValue>());
+        let offset: i64 = src.offset_from(container as *mut c_void) as i64;
+        let fsl: i64 = (*container).free_bytes() as i64;
+        let remaining_length: i64 = (*container).size() as i64 - (offset + fsl);
+        copy(src as *const u8, dest as *mut u8, remaining_length as usize);
+    }
+    node_ref.as_top_node_mut().set_type_flag(InnerNode);
+    let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
+    emb_ctx.root_container.as_mut().update_space_usage(0 - size_deleted as i16, ocx, ctx);
+    ocx.embedded_traversal_context = Some(emb_ctx);
+    OK
+}
+
 pub fn update_path_compressed_node(mut node: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> *mut NodeHeader {
-    if let Some(_) = &mut ocx.input_value {
+    if ocx.input_value.is_some() {
         let mut pc_node: &mut PathCompressedNodeHeader = unsafe { (*node).as_path_compressed_mut() };
         let mut value: *mut c_void = unsafe { (pc_node as *mut PathCompressedNodeHeader as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) };
 
         if pc_node.value_present() == 0 {
             node = ocx.new_expand(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
             let mut embedded_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-            let mut root_container: &mut Container = embedded_context.root_container.as_mut();
+            let root_container: &mut Container = embedded_context.root_container.as_mut();
             unsafe {
                 root_container.wrap_shift_container(value, size_of::<NodeValue>());
             }
@@ -420,7 +439,7 @@ pub fn eject_container(mut node: Box<NodeHeader>, ocx: &mut OperationContext, ct
 
     let child_offset: usize = node.get_offset_child_container();
     let embedded_container_offset: usize =
-        unsafe { (emb_container.get_as_mut_memory()).offset_from(emb_context.root_container.as_mut() as *mut Container as *mut c_void) as usize };
+        unsafe { emb_container.get_as_mut_memory().offset_from(emb_context.root_container.as_mut() as *mut Container as *mut c_void) as usize };
     let em_csize: u32 = unsafe { (*(emb_container.get())).size() as u32 };
     let ro_csize: u32 = emb_context.root_container.as_mut().size();
     assert!(ro_csize > em_csize);
@@ -453,7 +472,7 @@ pub fn eject_container(mut node: Box<NodeHeader>, ocx: &mut OperationContext, ct
         }
     }
 
-    let delta: i32 = -1 * (em_csize as i32 - get_container_link_size() as i32);
+    let delta: i32 = -(em_csize as i32 - get_container_link_size() as i32);
     let new_free_size_left: i32 = emb_context.root_container.as_mut().free_bytes() as i32 - delta;
     emb_context.root_container.as_mut().update_space_usage(delta as i16, ocx, ctx);
     assert!(ro_csize as i32 > new_free_size_left);
@@ -565,7 +584,7 @@ pub fn create_node_embedded(
         let mut successor_ptr: Option<NonNull<Node>> = None;
         let skipped: u32 = get_successor_embedded(node_head, &mut successor_ptr, ocx, ctx);
         if skipped > 0 {
-            let mut successor: &mut Node = unsafe { successor_ptr.as_mut().unwrap().as_mut() };
+            let successor: &mut Node = unsafe { successor_ptr.as_mut().unwrap().as_mut() };
             let diff: u8 = if successor.header.as_top_node().delta() == 0 {
                 successor.stored_value - key_delta
             } else {
@@ -717,10 +736,8 @@ pub fn create_node(
         }
     }
 
-    if container_depth > 0 {
-        if !ctx.header.end_operation() {
-            node_head = embed_or_link_child(node_head, ocx, ctx);
-        }
+    if container_depth > 0 && !ctx.header.end_operation() {
+        node_head = embed_or_link_child(node_head, ocx, ctx);
     }
     ocx.header.set_performed_put(true);
     node_head
@@ -809,7 +826,7 @@ pub fn get_successor_embedded(
     }
 
     if skipped_bytes > 0 {
-        unsafe { *successor = NonNull::new(successor_ptr) }
+        *successor = NonNull::new(successor_ptr);
     }
     skipped_bytes
 }
@@ -860,7 +877,7 @@ pub fn get_successor(
     }
 
     if skipped_bytes > 0 {
-        unsafe { *successor = NonNull::new(successor_ptr) }
+        *successor = NonNull::new(successor_ptr);
     }
     skipped_bytes
 }

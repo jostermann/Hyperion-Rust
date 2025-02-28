@@ -126,6 +126,7 @@ impl Container {
                 let mut previous_value: i32 = -1;
                 for i in i..SUBLEVEL_JUMPTABLE_ENTRIES {
                     unsafe {
+                        assert!(previous_value < *(jump_table.add(i)) as i32);
                         previous_value = *(jump_table.add(i)) as i32;
                         *(jump_table.add(i)) += usage_delta;
                     }
@@ -147,15 +148,38 @@ impl Container {
         if emb_container_depth > 0 {
             let emb_stack = &mut operation_context.embedded_traversal_context.as_mut().unwrap().embedded_stack;
             for i in (0..emb_container_depth as usize).rev() {
-                unsafe {
-                    let current_em_container = emb_stack[i].borrow_mut();
-                    let current_size = current_em_container.size();
-                    current_em_container.set_size(current_size + usage_delta as u8);
-                }
+                let current_em_container: &mut EmbeddedContainer = emb_stack[i].borrow_mut();
+                let current_size = current_em_container.size();
+                current_em_container.set_size(current_size + usage_delta as u8);
             }
         }
 
         container_traversal_context.safe_offset = (self.size() - self.free_bytes() as u32) as i32;
+    }
+
+    pub fn use_jumptable_2(&mut self, key_char: u8, offset: &mut i32) -> u8 {
+        let items: i32 = TOPLEVEL_JUMPTABLE_ENTRIES as i32 * self.jump_table() as i32;
+        let jt_entry: *mut SubNodeJumpTableEntry = self.get_jump_table_pointer();
+
+        let mut i: i32 = items - 1;
+        let mut jt_entry_tmp: *mut SubNodeJumpTableEntry = unsafe { jt_entry.add((i / 2) as usize) };
+        if unsafe { (*jt_entry_tmp).key() > key_char } {
+            i = i / 2;
+        }
+
+        for i in (0..i + 1).rev() {
+            unsafe {
+                jt_entry_tmp = jt_entry.add(i as usize);
+                if (*jt_entry_tmp).key() <= key_char {
+                    *offset = (*jt_entry_tmp).offset() as i32;
+                    return (*jt_entry_tmp).key();
+                }
+            }
+            jt_entry_tmp = unsafe { jt_entry.add(i as usize) };
+
+        }
+        *offset = self.get_container_head_size() + self.get_jump_table_size();
+        0
     }
 }
 

@@ -1,11 +1,10 @@
-use std::ffi::c_void;
-use std::ptr::{copy, write_bytes, NonNull};
-use libc::{memmove, memset, size_t};
 use crate::hyperion::components::container::Container;
 use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext, JumpContext, OperationContext, KEY_DELTA_STATES};
 use crate::hyperion::components::node_header::{get_successor, get_successor_embedded, NodeHeader};
 use crate::hyperion::components::return_codes::ReturnCode;
 use crate::hyperion::components::return_codes::ReturnCode::OK;
+use std::ffi::c_void;
+use std::ptr::{copy, write_bytes, NonNull};
 
 #[derive(Debug, PartialEq, PartialOrd)]
 pub enum NodeType {
@@ -80,20 +79,18 @@ impl Node {
                 self.stored_value = ctx.first_char;
             }
         }
+        else if ctx.header.last_sub_char_set() {
+            self.stored_value = ctx.second_char - ctx.header.last_sub_char_set() as u8;
+        }
         else {
-            if ctx.header.last_sub_char_set() {
-                self.stored_value = ctx.second_char - ctx.header.last_sub_char_set() as u8;
-            }
-            else {
-                self.stored_value = ctx.second_char;
-            }
+            self.stored_value = ctx.second_char;
         }
 
         let skipped_bytes: u32 = if embedded {
-            get_successor_embedded(&mut self.header as *mut NodeHeader, &mut successor_ptr, ocx, ctx) as u32
+            get_successor_embedded(&mut self.header as *mut NodeHeader, &mut successor_ptr, ocx, ctx)
         }
         else {
-            get_successor(&mut self.header as *mut NodeHeader, &mut successor_ptr, ocx, ctx) as u32
+            get_successor(&mut self.header as *mut NodeHeader, &mut successor_ptr, ocx, ctx)
         };
 
         if skipped_bytes > 0 {
@@ -143,35 +140,33 @@ pub fn update_successor_key(node: *mut Node, diff: u8, absolute_key: u8, skipped
             emb_ctx.root_container.as_mut().update_space_usage(-1, ocx, ctx);
             ocx.jump_context = Some(current_jump_context);
         }
-        else {
-            if node_ref.header.as_top_node().container_type() == 0 {
-                if ocx.jump_context.as_mut().unwrap().top_node_key < 255 {
-                    let current_jump_context: JumpContext = ocx.jump_context.as_mut().unwrap().duplicate();
-                    ocx.jump_context.as_mut().unwrap().predecessor = unsafe {
-                        Some(
-                            Box::from_raw(node.as_mut().unwrap() as *mut Node as *mut NodeHeader)
-                        )
-                    };
+        else if node_ref.header.as_top_node().container_type() == 0 {
+            if ocx.jump_context.as_mut().unwrap().top_node_key < 255 {
+                let current_jump_context: JumpContext = ocx.jump_context.as_mut().unwrap().duplicate();
+                ocx.jump_context.as_mut().unwrap().predecessor = unsafe {
+                    Some(
+                        Box::from_raw(node.as_mut().unwrap() as *mut Node as *mut NodeHeader)
+                    )
+                };
 
-                    ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
-                    ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute = unsafe {
-                        ((&mut (*node).header) as *mut NodeHeader as *mut c_void).offset_from(ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void) as i32
-                    };
-                    let last_key_seen: i32 = ocx.jump_context.as_mut().unwrap().top_node_key;
-                    ocx.jump_context.as_mut().unwrap().top_node_key = absolute_key as i32;
-                    let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-                    emb_ctx.root_container.as_mut().update_space_usage(-1, ocx, ctx);
-                    ocx.embedded_traversal_context = Some(emb_ctx);
-                    ocx.jump_context.as_mut().unwrap().top_node_key = last_key_seen;
-                    ocx.jump_context = Some(current_jump_context);
-                }
-            }
-            else {
-                let last_key_seen: u8 = ctx.second_char;
-                ctx.second_char += diff;
+                ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
+                ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute = unsafe {
+                    ((&mut (*node).header) as *mut NodeHeader as *mut c_void).offset_from(ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void) as i32
+                };
+                let last_key_seen: i32 = ocx.jump_context.as_mut().unwrap().top_node_key;
+                ocx.jump_context.as_mut().unwrap().top_node_key = absolute_key as i32;
+                let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
                 emb_ctx.root_container.as_mut().update_space_usage(-1, ocx, ctx);
-                ctx.second_char = last_key_seen;
+                ocx.embedded_traversal_context = Some(emb_ctx);
+                ocx.jump_context.as_mut().unwrap().top_node_key = last_key_seen;
+                ocx.jump_context = Some(current_jump_context);
             }
+        }
+        else {
+            let last_key_seen: u8 = ctx.second_char;
+            ctx.second_char += diff;
+            emb_ctx.root_container.as_mut().update_space_usage(-1, ocx, ctx);
+            ctx.second_char = last_key_seen;
         }
         ocx.embedded_traversal_context = Some(emb_ctx);
     }

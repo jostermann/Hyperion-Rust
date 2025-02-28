@@ -19,7 +19,7 @@ pub struct SubNodeJumpTableEntry {
 }
 
 #[derive(Copy, Clone)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct SubNodeJumpTable {
     pub jump: [SubNodeJumpTableEntry; TOPLEVEL_JUMPTABLE_ENTRIES]
 }

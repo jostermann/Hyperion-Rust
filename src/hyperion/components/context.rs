@@ -15,14 +15,15 @@ use crate::hyperion::components::return_codes::ReturnCode::OK;
 use crate::hyperion::components::sub_node::ChildLinkType;
 use crate::hyperion::components::sub_node::ChildLinkType::PathCompressed;
 use crate::hyperion::components::top_node::TopNode;
-use crate::hyperion::internals::atomic_pointer::{
-    AtomicChar, AtomicContainer, AtomicEmbContainer, AtomicHyperionPointer, Atomicu8, CONTAINER_SIZE_TYPE_0,
-};
+use crate::hyperion::internals::atomic_pointer::{AtomicChar, AtomicContainer, AtomicEmbContainer, AtomicHyperionPointer, Atomicu8, CONTAINER_SIZE_TYPE_0};
 use crate::memorymanager::api::{get_pointer, reallocate, Arena, HyperionPointer};
 use bitfield_struct::bitfield;
 use std::ffi::c_void;
 use std::ops::DerefMut;
 use std::ptr::{null_mut, write_bytes, NonNull};
+use libc::file_clone_range;
+use crate::hyperion::components::context::JumpStates::{JumpPoint1, JumpPoint2, NoJump};
+use crate::hyperion::internals::core::GLOBAL_CONFIG;
 
 pub const KEY_DELTA_STATES: usize = 7;
 pub const SUBLEVEL_JUMPTABLE_HWM: usize = 16;
@@ -237,6 +238,12 @@ impl ContainerValidTypes {
     }
 }
 
+enum JumpStates {
+    JumpPoint1,
+    JumpPoint2,
+    NoJump
+}
+
 #[bitfield(u8, order = Msb)]
 pub struct OperationContextHeader {
     #[bits(2)]
@@ -311,7 +318,7 @@ impl OperationContext {
         self.jump_table_sub_context = Some(sub_jump_table);
     }
 
-    pub fn new_expand(&mut self, ctx: &mut ContainerTraversalContext, required: u32) -> Box<NodeHeader> {
+    pub fn new_expand(&mut self, ctx: &mut ContainerTraversalContext, required: u32) -> *mut NodeHeader {
         let mut embedded_traversal_context: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
         let mut arena: Box<Arena> = self.arena.take().unwrap();
         let free_space_left: u32 = embedded_traversal_context.root_container.deref_mut().free_bytes() as u32;
@@ -370,10 +377,10 @@ impl OperationContext {
         let raw_container_pointer: *mut Container = embedded_traversal_context.root_container.as_mut() as *mut Container;
         self.embedded_traversal_context = Some(embedded_traversal_context);
 
-        unsafe { Box::from_raw(raw_container_pointer.add(ctx.current_container_offset as usize) as *mut NodeHeader) }
+        unsafe { raw_container_pointer.add(ctx.current_container_offset as usize) as *mut NodeHeader }
     }
 
-    pub fn new_expand_embedded(&mut self, ctx: &mut ContainerTraversalContext, required: u32) -> Box<NodeHeader> {
+    pub fn new_expand_embedded(&mut self, ctx: &mut ContainerTraversalContext, required: u32) -> *mut NodeHeader {
         let mut embedded_traversal_context: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
         let mut arena: Box<Arena> = self.arena.take().unwrap();
         let free_space_left: u32 = embedded_traversal_context.root_container.deref_mut().free_bytes() as u32;
@@ -455,13 +462,13 @@ impl OperationContext {
         self.embedded_traversal_context = Some(embedded_traversal_context);
         self.arena = Some(arena);
         unsafe {
-            Box::from_raw((raw_container_pointer as *mut char).add(
+            (raw_container_pointer as *mut char).add(
                 ctx.current_container_offset as usize + self.embedded_traversal_context.as_mut().unwrap().next_embedded_container_offset as usize,
-            ) as *mut NodeHeader)
+            ) as *mut NodeHeader
         }
     }
 
-    pub fn insert_jump(&mut self, ctx: &mut ContainerTraversalContext, jump_value: u16) -> Box<NodeHeader> {
+    pub fn insert_jump(&mut self, ctx: &mut ContainerTraversalContext, jump_value: u16) -> *mut NodeHeader {
         self.new_expand(ctx, size_of::<NodeValue>() as u32);
         let node: *mut NodeHeader = unsafe {
             (self.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void)
@@ -489,14 +496,12 @@ impl OperationContext {
             root_container.update_space_usage(size_of::<u16>() as i16, self, ctx);
             self.embedded_traversal_context = Some(etc);
             ctx.current_container_offset += size_of::<u16>() as i32;
-            Box::from_raw(
-                (self.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void)
-                    .add(ctx.current_container_offset as usize) as *mut NodeHeader,
-            )
+            (self.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void)
+                .add(ctx.current_container_offset as usize) as *mut NodeHeader
         }
     }
 
-    pub fn meta_expand(&mut self, ctx: &mut ContainerTraversalContext, required: u32) -> Box<NodeHeader> {
+    pub fn meta_expand(&mut self, ctx: &mut ContainerTraversalContext, required: u32) -> *mut NodeHeader {
         if self.embedded_traversal_context.as_mut().unwrap().embedded_container_depth == 0 {
             return self.new_expand(ctx, required);
         }
@@ -565,7 +570,7 @@ impl OperationContext {
                             ctx.last_top_char_seen = key;
                         } else if key == ctx.first_char {
                             if node_header_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
-                                node_header = self.new_expand_embedded(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
+                                node_header = self.new_expand_embedded(ctx, size_of::<NodeValue>() as u32);
                                 let target: *mut c_void = unsafe { (node_header as *mut c_void).add((*node_header).get_offset_node_value()) };
                                 let mut emb_context: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
                                 unsafe {
@@ -663,7 +668,7 @@ impl OperationContext {
                         } else if key == ctx.second_char {
                             if ctx.header.end_operation() {
                                 if node_header_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
-                                    node_header = self.new_expand_embedded(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
+                                    node_header = self.new_expand_embedded(ctx, size_of::<NodeValue>() as u32);
                                     let target: *mut c_void = unsafe { (node_header as *mut c_void).add((*node_header).get_offset_node_value()) };
                                     let mut emb_context: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
                                     unsafe {
@@ -737,10 +742,9 @@ impl OperationContext {
         let mut node_head: *mut NodeHeader = null_mut();
         let mut key = 0;
         let mut top_level_nodes = 0;
-        let mut force_skip: bool = false;
-        let mut force_skip_check: bool = false;
         let mut emb_ctx: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
         let root_container: &mut Container = emb_ctx.root_container.as_mut();
+        let mut jump_point = NoJump;
 
         ctx.safe_offset = root_container.size() as i32 - root_container.free_bytes() as i32;
 
@@ -751,83 +755,93 @@ impl OperationContext {
             node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
 
             if key != 0 {
-                force_skip_check = true;
+                jump_point = JumpPoint2;
             }
         }
 
         loop {
-            let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+            match jump_point {
+                NoJump => {
+                    node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
 
-            if !force_skip_check {
-                node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-
-                if ctx.safe_offset > ctx.current_container_offset {
-                    force_skip = true;
-                }
-
-                if !force_skip && (ctx.current_container_offset >= root_container.size() as i32 || node_ref.as_top_node().type_flag() == Invalid) {
-                    self.embedded_traversal_context = Some(emb_ctx);
-                    self.jump_context.as_mut().unwrap().top_node_key = ctx.first_char as i32;
-                    if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
-                        create_node(node_head, self, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
-                    } else {
-                        create_node(node_head, self, ctx, 0, true, true, 0);
+                    if ctx.safe_offset > ctx.current_container_offset {
+                        jump_point = JumpPoint1;
+                        continue;
                     }
-                    return OK;
-                }
-            }
 
-            // LABLE_1
-            if force_skip_check || node_ref.as_top_node().container_type() == 0 {
-                if !force_skip_check {
-                    key = unsafe { (*(node_head as *mut Node)).get_top_node_key(ctx) };
-                }
+                    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
 
-                self.jump_context.as_mut().unwrap().top_node_key = key as i32;
-                if key < ctx.first_char {
-                    ctx.header.set_last_top_char_set(true);
-                    ctx.last_top_char_seen = key;
-                } else if key == ctx.first_char {
-                    node_ref.register_jump_context(ctx, self);
-                    if node_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
-                        node_head = self.new_expand(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
-                        unsafe {
-                            root_container
-                                .wrap_shift_container((node_head as *mut c_void).add((*node_head).get_offset_node_value()), size_of::<NodeValue>());
+                    if ctx.current_container_offset >= root_container.size() as i32 || node_ref.as_top_node().type_flag() == Invalid {
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        self.jump_context.as_mut().unwrap().top_node_key = ctx.first_char as i32;
+                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, self, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                        } else {
+                            create_node(node_head, self, ctx, 0, true, true, 0);
                         }
-                        root_container.update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
+                        return OK;
                     }
-                    self.embedded_traversal_context = Some(emb_ctx);
-                    return unsafe { (*node_head).set_node_value(self) };
-                } else {
-                    self.jump_context.as_mut().unwrap().predecessor = None;
-                    ctx.header.set_force_shift_before_insert(true);
-                    self.embedded_traversal_context = Some(emb_ctx);
+                    jump_point = JumpPoint1;
+                    continue;
+                }
+                JumpPoint1 => {
+                    jump_point = NoJump;
+                    if unsafe { (*node_head).as_top_node().container_type() == 0 } {
+                        key = unsafe { (*(node_head as *mut Node)).get_top_node_key(ctx) };
+                        jump_point = JumpPoint2;
+                        continue;
+                    }
+                    self.jump_context.as_mut().unwrap().sub_nodes_seen += 1;
+                    ctx.current_container_offset += unsafe { (*node_head).get_offset_sub_node() as i32 };
+                }
+                JumpPoint2 => {
+                    self.jump_context.as_mut().unwrap().top_node_key = key as i32;
 
-                    if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
-                        create_node(node_head, self, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                    if key < ctx.first_char {
+                        ctx.header.set_last_top_char_set(true);
+                        ctx.last_top_char_seen = key;
+                    } else if key == ctx.first_char {
+                        let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+                        node_ref.register_jump_context(ctx, self);
+                        if node_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
+                            node_head = self.new_expand(ctx, size_of::<NodeValue>() as u32);
+                            unsafe {
+                                root_container
+                                    .wrap_shift_container((node_head as *mut c_void).add((*node_head).get_offset_node_value()), size_of::<NodeValue>());
+                            }
+                            root_container.update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
+                        }
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        return unsafe { (*node_head).set_node_value(self) };
                     } else {
-                        create_node(node_head, self, ctx, 0, true, true, 0);
+                        self.jump_context.as_mut().unwrap().predecessor = None;
+                        ctx.header.set_force_shift_before_insert(true);
+                        self.embedded_traversal_context = Some(emb_ctx);
+
+                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, self, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                        } else {
+                            create_node(node_head, self, ctx, 0, true, true, 0);
+                        }
+                        return OK;
                     }
-                    return OK;
-                }
 
-                let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+                    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
 
-                if node_ref.as_top_node().jump_successor_present() {
-                    ctx.current_container_offset = node_ref.get_jump_value() as i32;
-                } else {
-                    ctx.current_container_offset += node_ref.get_offset_top_node() as i32;
+                    if node_ref.as_top_node().jump_successor_present() {
+                        ctx.current_container_offset = node_ref.get_jump_value() as i32;
+                    } else {
+                        ctx.current_container_offset += node_ref.get_offset_top_node() as i32;
+                    }
+                    self.jump_context.as_mut().unwrap().predecessor = unsafe { Some(Box::from_raw(node_ref as *mut NodeHeader)) };
+                    self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
+                        unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
+                    self.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
+                    top_level_nodes += 1;
+                    jump_point = NoJump;
+                    continue;
                 }
-                self.jump_context.as_mut().unwrap().predecessor = unsafe { Some(Box::from_raw(node_ref as *mut NodeHeader)) };
-                self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
-                    unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
-                self.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
-                top_level_nodes += 1;
-                continue;
             }
-            self.jump_context.as_mut().unwrap().sub_nodes_seen += 1;
-            ctx.current_container_offset += node_ref.get_offset_sub_node() as i32;
         }
     }
 
@@ -837,110 +851,125 @@ impl OperationContext {
         let mut force_skip: bool = false;
         let mut emb_ctx: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
         let root_container: &mut Container = emb_ctx.root_container.as_mut();
+        let mut jump_point = NoJump;
 
         ctx.safe_offset = root_container.size() as i32 - root_container.free_bytes() as i32;
 
         node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
 
         loop {
-            assert!(ctx.safe_offset > 0);
+            match jump_point {
+                NoJump => {
+                    assert!(ctx.safe_offset > 0);
 
-            if ctx.safe_offset > ctx.current_container_offset {
-                force_skip = true;
-            }
+                    if ctx.safe_offset > ctx.current_container_offset {
+                        jump_point = JumpPoint1;
+                        continue;
+                    }
 
-            let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+                    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
 
-            if !force_skip && (ctx.current_container_offset >= root_container.size() as i32 || node_ref.as_top_node().type_flag() == Invalid) {
-                self.embedded_traversal_context = Some(emb_ctx);
-                ctx.header.set_node_type(0);
-                if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                    create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
-                } else {
-                    create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
-                }
-                return OK;
-            }
-
-            force_skip = false;
-
-            if node_ref.as_top_node().container_type() == 1 {
-                key = unsafe { (*(node_head as *mut Node)).get_top_node_key(ctx) };
-
-                if key < ctx.second_char {
-                    ctx.current_container_offset += node_ref.get_offset_sub_node() as i32;
-                    node_head =
-                        unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-                    ctx.header.set_last_sub_char_set(true);
-                    ctx.last_sub_char_seen = key;
-                    self.jump_context.as_mut().unwrap().sub_nodes_seen += 1;
-
-                    if self.jump_context.as_mut().unwrap().sub_nodes_seen >= SUBLEVEL_JUMPTABLE_HWM as i32 {
+                    if ctx.current_container_offset >= root_container.size() as i32 || node_ref.as_top_node().type_flag() == Invalid {
                         self.embedded_traversal_context = Some(emb_ctx);
-                        create_sublevel_jumptable(node_head, self, ctx);
-                        ctx.flush();
-                        self.flush_jump_context();
-                        self.flush_jump_table_sub_context();
-                        ctx.current_container_offset =
-                            self.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_container_head_size();
-                        return self.scan_put(ctx);
+                        ctx.header.set_node_type(0);
+                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        } else {
+                            create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                        }
+                        return OK;
                     }
-                } else if key == ctx.second_char {
-                    if ctx.header.end_operation() {
-                        if node_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
-                            node_head = self.new_expand(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
-                            unsafe {
-                                emb_ctx.root_container.as_mut().wrap_shift_container(
-                                    (node_head as *mut c_void).add((*node_head).get_offset_node_value()),
-                                    size_of::<NodeValue>(),
-                                );
+
+                    jump_point = JumpPoint1;
+                    continue;
+                }
+                JumpPoint1 => {
+                    jump_point = NoJump;
+                    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+                    if node_ref.as_top_node().container_type() == 1 {
+                        key = unsafe { (*(node_head as *mut Node)).get_top_node_key(ctx) };
+
+                        if key < ctx.second_char {
+                            ctx.current_container_offset += node_ref.get_offset_sub_node() as i32;
+                            node_head =
+                                unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                            ctx.header.set_last_sub_char_set(true);
+                            ctx.last_sub_char_seen = key;
+                            self.jump_context.as_mut().unwrap().sub_nodes_seen += 1;
+
+                            if self.jump_context.as_mut().unwrap().sub_nodes_seen >= SUBLEVEL_JUMPTABLE_HWM as i32 {
+                                self.embedded_traversal_context = Some(emb_ctx);
+                                create_sublevel_jumptable(node_head, self, ctx);
+                                ctx.flush();
+                                self.flush_jump_context();
+                                self.flush_jump_table_sub_context();
+                                ctx.current_container_offset =
+                                    self.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_container_head_size();
+                                return self.scan_put(ctx);
                             }
-                            emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
-                        }
-                        unsafe { (*node_head).set_node_value(self) };
-                    } else {
-                        match node_ref.as_sub_node().child_container() {
-                            ChildLinkType::None => {
-                                node_head = embed_or_link_child(node_head, self, ctx);
-                            },
-                            PathCompressed => {
-                                if !node_ref.compare_path_compressed_node(self) {
-                                    node_head = update_path_compressed_node(node_head, self, ctx);
-                                } else {
-                                    node_ref.safe_path_compressed_context(self);
-                                    node_head = embed_or_link_child(node_head, self, ctx);
+                        } else if key == ctx.second_char {
+                            if ctx.header.end_operation() {
+                                if node_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
+                                    node_head = self.new_expand(ctx, size_of::<NodeValue>() as u32);
+                                    unsafe {
+                                        emb_ctx.root_container.as_mut().wrap_shift_container(
+                                            (node_head as *mut c_void).add((*node_head).get_offset_node_value()),
+                                            size_of::<NodeValue>(),
+                                        );
+                                    }
+                                    emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
                                 }
-                            },
-                            _ => {
-                                let mut next_container: Box<HyperionPointer> = self.next_container_pointer.take().unwrap();
-                                let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
-                                    NonNull::new(next_container.as_mut() as *mut HyperionPointer);
-                                get_child_container_pointer(node_head, &mut next_container_pointer, self, ctx);
-                                self.next_container_pointer = Some(next_container);
-                            },
+                                unsafe { (*node_head).set_node_value(self) };
+                            } else {
+                                match node_ref.as_sub_node().child_container() {
+                                    ChildLinkType::None => {
+                                        node_head = embed_or_link_child(node_head, self, ctx);
+                                    },
+                                    PathCompressed => {
+                                        if !node_ref.compare_path_compressed_node(self) {
+                                            node_head = update_path_compressed_node(node_head, self, ctx);
+                                        } else {
+                                            node_ref.safe_path_compressed_context(self);
+                                            node_head = embed_or_link_child(node_head, self, ctx);
+                                        }
+                                    },
+                                    _ => {
+                                        let mut next_container: Box<HyperionPointer> = self.next_container_pointer.take().unwrap();
+                                        let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
+                                            NonNull::new(next_container.as_mut() as *mut HyperionPointer);
+                                        get_child_container_pointer(node_head, &mut next_container_pointer, self, ctx);
+                                        self.next_container_pointer = Some(next_container);
+                                    },
+                                }
+                            }
+                            self.embedded_traversal_context = Some(emb_ctx);
+                            return OK;
+                        } else {
+                            ctx.header.set_force_shift_before_insert(true);
+                            if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                                create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                            } else {
+                                if !ctx.header.last_sub_char_set() {
+                                    ctx.header.set_last_sub_char_set(true);
+                                    ctx.last_sub_char_seen = 0;
+                                }
+                                create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                            }
+                            self.embedded_traversal_context = Some(emb_ctx);
+                            return OK;
                         }
-                    }
-                    self.embedded_traversal_context = Some(emb_ctx);
-                    return OK;
-                } else {
-                    ctx.header.set_force_shift_before_insert(true);
-                    if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                        create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
                     } else {
-                        create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                        ctx.header.set_force_shift_before_insert(true);
+                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        } else {
+                            create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                        }
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        return OK;
                     }
-                    self.embedded_traversal_context = Some(emb_ctx);
-                    return OK;
                 }
-            } else {
-                ctx.header.set_force_shift_before_insert(true);
-                if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                    create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
-                } else {
-                    create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
-                }
-                self.embedded_traversal_context = Some(emb_ctx);
-                return OK;
+                _ => { continue; }
             }
         }
     }
@@ -948,111 +977,275 @@ impl OperationContext {
     pub fn scan_put_phase2_withjt(&mut self, ctx: &mut ContainerTraversalContext, destination: i32) -> ReturnCode {
         let mut node_head: *mut NodeHeader = null_mut();
         let mut key = destination;
-        let mut force_skip: bool = false;
-        let mut force_skip_check: bool = false;
         let mut emb_ctx: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
         let root_container: &mut Container = emb_ctx.root_container.as_mut();
+        let mut jump_point = NoJump;
 
         ctx.safe_offset = root_container.size() as i32 - root_container.free_bytes() as i32;
 
         node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
 
         if key != 0 {
-            force_skip_check = true;
+            jump_point = JumpPoint2;
         }
 
         loop {
-            if ctx.safe_offset > ctx.current_container_offset {
-                force_skip = true;
-            }
+            match jump_point {
+                NoJump => {
+                    if ctx.safe_offset > ctx.current_container_offset {
+                        jump_point = JumpPoint1;
+                        continue;
+                    }
 
-            let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+                    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
 
-            if !force_skip && (ctx.current_container_offset >= root_container.size() as i32 || node_ref.as_top_node().type_flag() == Invalid) {
-                self.embedded_traversal_context = Some(emb_ctx);
-                ctx.header.set_node_type(0);
-                if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                    create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
-                } else {
-                    create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
-                }
-                return OK;
-            }
-
-            if force_skip_check || node_ref.as_top_node().container_type() == 0 {
-                if !force_skip_check {
-                    key = unsafe { (*(node_head as *mut Node)).get_sub_node_key(ctx, false) as i32 };
-                }
-                force_skip_check = false;
-
-                if key < ctx.second_char as i32 {
-                    ctx.current_container_offset += node_ref.get_offset_sub_node() as i32;
-                    node_head =
-                        unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-                    ctx.header.set_last_sub_char_set(true);
-                    ctx.last_sub_char_seen = key as u8;
-                } else if key == ctx.second_char as i32 {
-                    if ctx.header.end_operation() {
-                        if node_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
-                            node_head = self.new_expand(ctx, size_of::<NodeValue>() as u32).as_raw_mut();
-                            unsafe {
-                                emb_ctx.root_container.as_mut().wrap_shift_container(
-                                    (node_head as *mut c_void).add((*node_head).get_offset_node_value()),
-                                    size_of::<NodeValue>(),
-                                );
-                            }
-                            emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
+                    if ctx.current_container_offset >= root_container.size() as i32 || node_ref.as_top_node().type_flag() == Invalid {
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        ctx.header.set_node_type(0);
+                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        } else {
+                            create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
                         }
-                        unsafe { (*node_head).set_node_value(self) };
-                    } else {
-                        match node_ref.as_sub_node().child_container() {
-                            ChildLinkType::None => {
-                                node_head = embed_or_link_child(node_head, self, ctx);
-                            },
-                            PathCompressed => {
-                                if !node_ref.compare_path_compressed_node(self) {
-                                    node_head = update_path_compressed_node(node_head, self, ctx);
-                                } else {
-                                    node_ref.safe_path_compressed_context(self);
-                                    node_head = embed_or_link_child(node_head, self, ctx);
+                        return OK;
+                    }
+                    jump_point = JumpPoint1;
+                    continue;
+                }
+                JumpPoint1 => {
+                    jump_point = NoJump;
+                    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+                    if node_ref.as_top_node().container_type() == 1 {
+                        key = unsafe { (*(node_head as *mut Node)).get_sub_node_key(ctx, false) as i32 };
+                        jump_point = JumpPoint2;
+                        continue;
+                    }
+                    else {
+                        ctx.header.set_force_shift_before_insert(true);
+                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        } else {
+                            create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                        }
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        return OK;
+                    }
+                }
+                JumpPoint2 => {
+                    jump_point = NoJump;
+                    let node_ref: &mut NodeHeader = unsafe { node_head.as_mut().unwrap() };
+
+                    if key < ctx.second_char as i32 {
+                        ctx.current_container_offset += node_ref.get_offset_sub_node() as i32;
+                        node_head =
+                            unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                        ctx.header.set_last_sub_char_set(true);
+                        ctx.last_sub_char_seen = key as u8;
+                    } else if key == ctx.second_char as i32 {
+                        if ctx.header.end_operation() {
+                            if node_ref.as_top_node().type_flag() != LeafNodeWithValue && self.input_value.is_some() {
+                                node_head = self.new_expand(ctx, size_of::<NodeValue>() as u32);
+                                unsafe {
+                                    emb_ctx.root_container.as_mut().wrap_shift_container(
+                                        (node_head as *mut c_void).add((*node_head).get_offset_node_value()),
+                                        size_of::<NodeValue>(),
+                                    );
                                 }
-                            },
-                            _ => {
-                                let mut next_container: Box<HyperionPointer> = self.next_container_pointer.take().unwrap();
-                                let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
-                                    NonNull::new(next_container.as_mut() as *mut HyperionPointer);
-                                get_child_container_pointer(node_head, &mut next_container_pointer, self, ctx);
-                                self.next_container_pointer = Some(next_container);
-                            },
+                                emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, self, ctx);
+                            }
+                            unsafe { (*node_head).set_node_value(self) };
+                        } else {
+                            match node_ref.as_sub_node().child_container() {
+                                ChildLinkType::None => {
+                                    node_head = embed_or_link_child(node_head, self, ctx);
+                                },
+                                PathCompressed => {
+                                    if !node_ref.compare_path_compressed_node(self) {
+                                        node_head = update_path_compressed_node(node_head, self, ctx);
+                                    } else {
+                                        node_ref.safe_path_compressed_context(self);
+                                        node_head = embed_or_link_child(node_head, self, ctx);
+                                    }
+                                },
+                                _ => {
+                                    let mut next_container: Box<HyperionPointer> = self.next_container_pointer.take().unwrap();
+                                    let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
+                                        NonNull::new(next_container.as_mut() as *mut HyperionPointer);
+                                    get_child_container_pointer(node_head, &mut next_container_pointer, self, ctx);
+                                    self.next_container_pointer = Some(next_container);
+                                },
+                            }
                         }
-                    }
-                    self.embedded_traversal_context = Some(emb_ctx);
-                    return OK;
-                } else {
-                    ctx.header.set_force_shift_before_insert(true);
-                    if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                        create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        return OK;
                     } else {
-                        create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                        ctx.header.set_force_shift_before_insert(true);
+                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        } else {
+                            create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
+                        }
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        return OK;
                     }
-                    self.embedded_traversal_context = Some(emb_ctx);
-                    return OK;
                 }
-            } else {
-                ctx.header.set_force_shift_before_insert(true);
-                if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                    create_node(node_head, self, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
-                } else {
-                    create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), 0);
-                }
-                self.embedded_traversal_context = Some(emb_ctx);
-                return OK;
             }
         }
     }
 
     pub fn scan_put(&mut self, ctx: &mut ContainerTraversalContext) -> ReturnCode {
-        todo!()
+        let mut node_head: *mut NodeHeader = null_mut();
+        let mut toplevel_nodes = TOPLEVEL_JUMPTABLE_HWM as i32;
+        let mut emb_ctx: EmbeddedTraversalContext = self.embedded_traversal_context.take().unwrap();
+        let root_container: &mut Container = emb_ctx.root_container.as_mut();
+        let mut jump_point = NoJump;
+
+        ctx.safe_offset = root_container.size() as i32 - root_container.free_bytes() as i32;
+
+        if root_container.jump_table() != 0 {
+            if (root_container.jump_table() as usize) < TOPLEVEL_JUMPTABLE_INCREMENTS {
+                toplevel_nodes = TOPLEVEL_AGGRESSIVE_GROWTH__HWM as i32;
+            }
+
+            self.jump_context.as_mut().unwrap().top_node_key = root_container.use_jumptable_2(ctx.first_char, &mut ctx.current_container_offset) as i32;
+
+            if self.jump_context.as_mut().unwrap().top_node_key != 0 {
+                node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                jump_point = JumpPoint2;
+            }
+        }
+
+        loop {
+            match jump_point {
+                NoJump => {
+                    node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+
+                    if ctx.safe_offset <= ctx.current_container_offset {
+                        self.jump_context.as_mut().unwrap().top_node_key = ctx.first_char as i32;
+
+                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                            node_head = create_node(node_head, self, ctx, 0, false, false, ctx.first_char - ctx.last_top_char_seen);
+                        }
+                        else {
+                            node_head = create_node(node_head, self, ctx, 0, true, false, 0);
+                        }
+                        ctx.current_container_offset += unsafe { (*node_head).get_offset_top_node() as i32 };
+                        node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                        create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), ctx.second_char);
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        return OK;
+                    }
+
+                    if unsafe { (*node_head).as_top_node().container_type() } == 1 {
+                        self.jump_context.as_mut().unwrap().sub_nodes_seen += 1;
+                        ctx.current_container_offset += unsafe { (*node_head).get_offset_sub_node() as i32 };
+                        node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                        jump_point = NoJump;
+                        continue;
+                    }
+                }
+                JumpPoint1 => {
+                    if toplevel_nodes == 0 && (root_container.size() as usize) > CONTAINER_SIZE_TYPE_0 * 4 {
+                        // insert or upgrade the jump table and restart the scan
+                        // upgrade_jump_table will reset ctx and ocx as required
+                        self.embedded_traversal_context = Some(emb_ctx);
+                        self.insert_top_level_jumptable(ctx);
+                        ctx.flush();
+                        self.flush_jump_context();
+                        self.flush_jump_table_sub_context();
+                        return self.scan_put(ctx);
+                    }
+                    self.jump_context.as_mut().unwrap().top_node_key = unsafe { (*(node_head as *mut Node)).get_top_node_key(ctx) as i32 };
+                    jump_point = JumpPoint2;
+                    continue;
+                }
+                JumpPoint2 => {
+                    toplevel_nodes -= 1;
+
+                    if self.jump_context.as_mut().unwrap().top_node_key < (ctx.first_char as i32) {
+                        ctx.header.set_last_top_char_set(true);
+                        ctx.last_top_char_seen = self.jump_context.as_mut().unwrap().top_node_key as u8;
+
+                        if self.jump_context.as_mut().unwrap().sub_nodes_seen > unsafe { GLOBAL_CONFIG.lock().unwrap().top_level_successor_threshold as i32 } {
+                            let jump_value = unsafe {
+                                ((node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as u16)
+                                    - self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as u16
+                            };
+                            node_head = self.insert_jump(ctx, jump_value);
+                        }
+                        self.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
+
+                        if unsafe { (*node_head).as_top_node().jump_successor_present() } {
+                            ctx.current_container_offset += unsafe { (*node_head).get_jump_value() as i32 };
+                            self.jump_context.as_mut().unwrap().predecessor = unsafe {
+                                Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader))
+                            };
+                            self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute = unsafe {
+                                (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32
+                            };
+                            node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                            jump_point = JumpPoint1;
+                            continue;
+                        }
+
+                        self.jump_context.as_mut().unwrap().predecessor = unsafe {
+                            Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader))
+                        };
+                        self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute = unsafe {
+                            (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32
+                        };
+                        ctx.current_container_offset += unsafe { (*node_head).get_offset_top_node() as i32 };
+                        node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                        jump_point = NoJump;
+                        continue;
+                    }
+                    else if self.jump_context.as_mut().unwrap().top_node_key == (ctx.first_char as i32) {
+                        ctx.header.set_in_first_char_scope(true);
+                        if self.jump_context.as_mut().unwrap().sub_nodes_seen > unsafe { GLOBAL_CONFIG.lock().unwrap().top_level_successor_threshold as i32 } {
+                            let jump_distance = unsafe {
+                                ((node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as u16)
+                                    - self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as u16
+                            };
+                            node_head = self.insert_jump(ctx, jump_distance);
+                        }
+                        self.jump_table_sub_context.as_mut().unwrap().top_node = unsafe {
+                            Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader))
+                        };
+                        self.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute = unsafe {
+                            (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32
+                        };
+                        self.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
+                        self.jump_context.as_mut().unwrap().predecessor = unsafe {
+                            Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader))
+                        };
+
+                        self.embedded_traversal_context = Some(emb_ctx);
+
+                        if unsafe { (*node_head).as_top_node().jump_table_present() } {
+                            let destination = unsafe { (*node_head).use_sub_node_jump_table(ctx) as i32 };
+                            return self.scan_put_phase2_withjt(ctx, destination);
+                        }
+                        ctx.current_container_offset += unsafe { (*node_head).get_offset() as i32 };
+                        return self.scan_put_phase2(ctx);
+                    }
+                    else {
+                        ctx.header.set_force_shift_before_insert(true);
+                        self.flush_jump_context();
+
+                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                            node_head = create_node(node_head, self, ctx, 0, false, false, ctx.first_char - ctx.last_top_char_seen);
+                        }
+                        else {
+                            node_head = create_node(node_head, self, ctx, 0, true, false, 0);
+                        }
+                        ctx.current_container_offset = unsafe { (*node_head).get_offset_top_node() as i32 };
+                        node_head = unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                        create_node(node_head, self, ctx, 1, true, ctx.header.end_operation(), ctx.second_char);
+                        return OK;
+                    }
+                }
+            }
+        }
     }
 
     pub fn insert_top_level_jumptable(&mut self, ctx: &mut ContainerTraversalContext) {

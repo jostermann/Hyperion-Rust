@@ -1,5 +1,4 @@
 use std::ffi::c_void;
-use std::ops::DerefMut;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 

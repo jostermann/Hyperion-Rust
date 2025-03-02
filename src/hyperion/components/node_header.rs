@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use crate::hyperion::components::container::{
     get_container_link_size, shift_container, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREESIZE,
 };
@@ -131,9 +132,9 @@ pub fn get_offset_child_container(node_head: *mut NodeHeader) -> usize {
 pub fn get_child_link_size(node_head: *mut NodeHeader) -> usize {
     match as_sub_node(node_head).child_container() {
         ChildLinkType::None => 0,
-        ChildLinkType::Link => size_of::<ContainerLink>(),
+        Link => size_of::<ContainerLink>(),
         ChildLinkType::EmbeddedContainer => unsafe { (*(as_raw_embedded(node_head, get_offset_child_container(node_head)))).size() as usize }
-        ChildLinkType::PathCompressed => unsafe { (*(as_raw_compressed(node_head))).size() as usize },
+        PathCompressed => unsafe { (*(as_raw_compressed(node_head))).size() as usize },
     }
 }
 
@@ -450,7 +451,7 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
         copy_memory_from(source, target, em_csize as usize - size_of::<EmbeddedContainer>());
         (*p_new).set_free_size_left((*p_new).free_bytes() as u32 - (em_csize - size_of::<EmbeddedContainer>() as u32));
     }
-    as_sub_node_mut(node_head).set_child_container(ChildLinkType::Link);
+    as_sub_node_mut(node_head).set_child_container(Link);
 
     unsafe {
         let target2: *mut ContainerLink = (node_head as *mut c_void).add(child_offset) as *mut ContainerLink;
@@ -559,23 +560,20 @@ pub fn create_node_embedded(
         }
     }
 
-    unsafe {
-        as_top_node_mut(node_head).set_type_flag(if add_value_after_creation && input_memory_consumption != 0 {
-            LeafNodeWithValue
-        } else {
-            InnerNode
-        });
-        as_top_node_mut(node_head).set_container_type(container_depth);
-    }
+    as_top_node_mut(node_head).set_type_flag(if add_value_after_creation && input_memory_consumption != 0 {
+        LeafNodeWithValue
+    } else {
+        InnerNode
+    });
+    as_top_node_mut(node_head).set_container_type(container_depth);
+
     emb_context.root_container.as_mut().update_space_usage(required as i16, ocx, ctx);
     ocx.embedded_traversal_context = Some(emb_context);
 
     if set_key_after_creation {
         set_nodes_key2(node_head as *mut Node, ocx, ctx, true, absolute_key);
     } else {
-        unsafe {
-            as_top_node_mut(node_head).set_delta(key_delta);
-        }
+        as_top_node_mut(node_head).set_delta(key_delta);
         let mut successor_ptr: Option<NonNull<Node>> = None;
         let skipped: u32 = get_successor_embedded(node_head, &mut successor_ptr, ocx, ctx);
         if skipped > 0 {
@@ -590,15 +588,11 @@ pub fn create_node_embedded(
     }
 
     if add_value_after_creation {
-        unsafe {
-            set_node_value(node_head, ocx);
-        }
+        set_node_value(node_head, ocx);
     }
 
     if !ctx.header.end_operation() && container_depth > 0 {
-        unsafe {
-            as_sub_node_mut(node_head).set_child_container(ChildLinkType::None);
-        }
+        as_sub_node_mut(node_head).set_child_container(ChildLinkType::None);
         embed_or_link_child(node_head, ocx, ctx);
     }
     ocx.header.set_performed_put(true);
@@ -728,7 +722,7 @@ pub fn get_child_container_pointer(
     mut node_head: *mut NodeHeader, childcon: &mut Option<NonNull<HyperionPointer>>, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext,
 ) -> ReturnCode {
     match as_sub_node(node_head).child_container() {
-        ChildLinkType::EmbeddedContainer | ChildLinkType::Link => {
+        ChildLinkType::EmbeddedContainer | Link => {
             if as_sub_node(node_head).child_container() == ChildLinkType::EmbeddedContainer {
                 safe_sub_node_jump_table_context(ocx, ctx);
                 let offset: usize = get_offset_child_container(node_head);
@@ -835,9 +829,7 @@ pub fn create_node(
     }
 
     if add_value_after_creation {
-        unsafe {
-            set_node_value(node_head, ocx);
-        }
+        set_node_value(node_head, ocx);
     }
 
     if container_depth > 0 && !ctx.header.end_operation() {
@@ -871,7 +863,7 @@ pub fn get_child_container_nomod(
             };
             OK
         },
-        ChildLinkType::Link => {
+        Link => {
             unsafe {
                 *childcon = Some(Box::from_raw((node_head as *mut c_void).add(get_offset_child_container(node_head)) as *mut HyperionPointer));
             }
@@ -1040,21 +1032,25 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
             if as_top_node(scan_node).container_type() == 0 {
                 let mut key = get_sub_node_key(scan_node as *mut Node, &mut tmp_ctx, false);
 
-                if key == JUMPTABLE_KEYS[expect] {
-                    *target = offset as u16;
-                    expect += 1;
-                    target = target.add(1);
-                    if expect == SUBLEVEL_JUMPTABLE_ENTRIES {
-                        break;
+                match key.cmp(&JUMPTABLE_KEYS[expect]) {
+                    Ordering::Less => {}
+                    Ordering::Equal => {
+                        *target = offset as u16;
+                        expect += 1;
+                        target = target.add(1);
+                        if expect == SUBLEVEL_JUMPTABLE_ENTRIES {
+                            break;
+                        }
                     }
-                } else if key > JUMPTABLE_KEYS[expect] {
-                    inject_sublevel_reference_key(scan_node, ocx, &mut tmp_ctx, JUMPTABLE_KEYS[expect]);
-                    *target = offset as u16;
-                    key = JUMPTABLE_KEYS[expect];
-                    expect += 1;
-                    target = target.add(1);
-                    if expect == SUBLEVEL_JUMPTABLE_ENTRIES {
-                        break;
+                    Ordering::Greater => {
+                        inject_sublevel_reference_key(scan_node, ocx, &mut tmp_ctx, JUMPTABLE_KEYS[expect]);
+                        *target = offset as u16;
+                        key = JUMPTABLE_KEYS[expect];
+                        expect += 1;
+                        target = target.add(1);
+                        if expect == SUBLEVEL_JUMPTABLE_ENTRIES {
+                            break;
+                        }
                     }
                 }
                 tmp_ctx.last_sub_char_seen = key;
@@ -1076,7 +1072,7 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
                 assert!(tmp_ctx.header.last_top_char_set());
                 assert!(JUMPTABLE_KEYS[expect] > tmp_ctx.last_sub_char_seen);
                 let diff = JUMPTABLE_KEYS[expect] - tmp_ctx.last_sub_char_seen;
-                let first_insert_is_relative = if diff <= KEY_DELTA_STATES as u8 { true } else { false };
+                let first_insert_is_relative = diff <= KEY_DELTA_STATES as u8;
                 let shift_by = ((size_of::<NodeHeader>() + 1) * numer_of_missing) - first_insert_is_relative as usize;
 
                 shift_container(scan_node as *mut c_void, shift_by, bytes_to_move as usize);
@@ -1156,9 +1152,7 @@ pub fn inject_sublevel_reference_key(node_head: *mut NodeHeader, ocx: &mut Opera
     if relative == 0 {
         set_nodes_key2(node_head as *mut Node, ocx, ctx, false, refkey);
     } else {
-        unsafe {
-            as_top_node_mut(node_head).set_delta(diff);
-        }
+        as_top_node_mut(node_head).set_delta(diff);
         let mut successor: Option<NonNull<Node>> = None;
         let skipped: u32 = get_successor(node_head, &mut successor, ocx, ctx);
 

@@ -2,14 +2,12 @@ use std::ffi::c_void;
 use std::ptr::{copy, null_mut, write_bytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use libc::{memcpy, memset, size_t};
-
 use crate::memorymanager::components::arena::ArenaInner;
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED};
 use crate::memorymanager::components::metabin::Metabin;
 use crate::memorymanager::components::superbin::{get_sblock_id, Superbin};
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, auto_reallocate_memory, AllocatedBy};
-use crate::memorymanager::internals::compression::{compress_arena, decompress_bin, decompress_extended, CompressionState};
+use crate::memorymanager::internals::compression::{compress_arena, decompress_extended, CompressionState};
 use crate::memorymanager::internals::simd_common::apply_index_search;
 use crate::memorymanager::internals::system_information::get_memory_stats;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;

@@ -1,6 +1,5 @@
 use std::ffi::c_void;
 use std::ptr::copy;
-use libc::memcpy;
 
 pub unsafe fn copy_memory_from<U, T>(src: *const T, dest: *mut U, size: usize) {
     let destination: *mut c_void = dest as *mut c_void;

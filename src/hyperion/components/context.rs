@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use crate::hyperion::components::container::{shift_container, Container, EmbeddedContainer, RootContainerEntry, CONTAINER_MAX_EMBEDDED_DEPTH};
 use crate::hyperion::components::context::JumpStates::{JumpPoint1, JumpPoint2, NoJump};
 use crate::hyperion::components::context::TraversalType::{
@@ -205,7 +206,7 @@ impl JumpContext {
 
     pub fn duplicate(&mut self) -> JumpContext {
         JumpContext {
-            predecessor: self.predecessor.as_mut().map(|mut node| Box::new(node.deep_copy())),
+            predecessor: self.predecessor.as_mut().map(|node| Box::new(node.deep_copy())),
             top_node_predecessor_offset_absolute: self.top_node_predecessor_offset_absolute,
             sub_nodes_seen: self.sub_nodes_seen,
             top_node_key: self.top_node_key,
@@ -608,31 +609,35 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                     // Don't process jumps for embedded nodes
                     key = get_top_node_key(node_header as *mut Node, ctx);
 
-                    if key < ctx.first_char {
-                        ctx.header.set_last_top_char_set(true);
-                        ctx.last_top_char_seen = key;
-                    } else if key == ctx.first_char {
-                        if as_top_node(node_header).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
-                            node_header = new_expand_embedded(ocx, ctx, size_of::<NodeValue>() as u32);
-                            let target: *mut c_void = unsafe { (node_header as *mut c_void).add(get_offset_node_value(node_header)) };
-                            let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-                            unsafe {
-                                emb_context.root_container.as_mut().wrap_shift_container(target, size_of::<NodeValue>());
+                    match key.cmp(&ctx.first_char) {
+                        Ordering::Less => {
+                            ctx.header.set_last_top_char_set(true);
+                            ctx.last_top_char_seen = key;
+                        }
+                        Ordering::Equal => {
+                            if as_top_node(node_header).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
+                                node_header = new_expand_embedded(ocx, ctx, size_of::<NodeValue>() as u32);
+                                let target: *mut c_void = unsafe { (node_header as *mut c_void).add(get_offset_node_value(node_header)) };
+                                let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
+                                unsafe {
+                                    emb_context.root_container.as_mut().wrap_shift_container(target, size_of::<NodeValue>());
+                                }
+                                emb_context.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
+                                ocx.embedded_traversal_context = Some(emb_context);
                             }
-                            emb_context.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
-                            ocx.embedded_traversal_context = Some(emb_context);
+                            return set_node_value(node_header, ocx);
                         }
-                        return set_node_value(node_header, ocx);
-                    } else {
-                        // Need to shift and insert
-                        ctx.header.set_force_shift_before_insert(true);
-                        ctx.header.set_in_first_char_scope(true);
-                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
-                            create_node_embedded(node_header, ocx, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
-                        } else {
-                            create_node_embedded(node_header, ocx, ctx, 0, true, true, 0);
+                        Ordering::Greater => {
+                            // Need to shift and insert
+                            ctx.header.set_force_shift_before_insert(true);
+                            ctx.header.set_in_first_char_scope(true);
+                            if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                                create_node_embedded(node_header, ocx, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                            } else {
+                                create_node_embedded(node_header, ocx, ctx, 0, true, true, 0);
+                            }
+                            return OK;
                         }
-                        return OK;
                     }
                     ctx.current_container_offset += get_offset_sub_node(node_header) as i32;
                     continue;
@@ -663,19 +668,23 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                     // Don't process jumps for embedded nodes
                     key = get_top_node_key(node_header as *mut Node, ctx);
 
-                    if key < ctx.first_char {
-                        ctx.header.set_last_top_char_set(true);
-                        ctx.last_top_char_seen = key;
-                    } else if key == ctx.first_char {
-                        ctx.header.set_in_first_char_scope(true);
-                    } else {
-                        // Need to shift and insert
-                        ctx.header.set_force_shift_before_insert(true);
-                        ctx.header.set_in_first_char_scope(true);
-                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
-                            node_header = create_node_embedded(node_header, ocx, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
-                        } else {
-                            node_header = create_node_embedded(node_header, ocx, ctx, 0, true, false, 0);
+                    match key.cmp(&ctx.first_char) {
+                        Ordering::Less => {
+                            ctx.header.set_last_top_char_set(true);
+                            ctx.last_top_char_seen = key;
+                        }
+                        Ordering::Equal => {
+                            ctx.header.set_in_first_char_scope(true);
+                        }
+                        Ordering::Greater => {
+                            // Need to shift and insert
+                            ctx.header.set_force_shift_before_insert(true);
+                            ctx.header.set_in_first_char_scope(true);
+                            if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                                node_header = create_node_embedded(node_header, ocx, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                            } else {
+                                node_header = create_node_embedded(node_header, ocx, ctx, 0, true, false, 0);
+                            }
                         }
                     }
                     ctx.current_container_offset += get_offset_sub_node(node_header) as i32;
@@ -701,59 +710,63 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                     // Still in first char scope
                     key = get_top_node_key(node_header as *mut Node, ctx);
 
-                    if key < ctx.first_char {
-                        ctx.header.set_last_top_char_set(true);
-                        ctx.last_top_char_seen = key;
-                        ctx.current_container_offset += get_offset_sub_node(node_header) as i32;
-                        continue;
-                    } else if key == ctx.second_char {
-                        if ctx.header.end_operation() {
-                            if as_top_node(node_header).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
-                                node_header = new_expand_embedded(ocx, ctx, size_of::<NodeValue>() as u32);
-                                let target: *mut c_void = unsafe { (node_header as *mut c_void).add(get_offset_node_value(node_header)) };
-                                let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-                                unsafe {
-                                    emb_context.root_container.as_mut().wrap_shift_container(target, size_of::<NodeValue>());
+                    match key.cmp(&ctx.first_char) {
+                        Ordering::Less => {
+                            ctx.header.set_last_top_char_set(true);
+                            ctx.last_top_char_seen = key;
+                            ctx.current_container_offset += get_offset_sub_node(node_header) as i32;
+                            continue;
+                        }
+                        Ordering::Equal => {
+                            return if ctx.header.end_operation() {
+                                if as_top_node(node_header).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
+                                    node_header = new_expand_embedded(ocx, ctx, size_of::<NodeValue>() as u32);
+                                    let target: *mut c_void = unsafe { (node_header as *mut c_void).add(get_offset_node_value(node_header)) };
+                                    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
+                                    unsafe {
+                                        emb_context.root_container.as_mut().wrap_shift_container(target, size_of::<NodeValue>());
+                                    }
+                                    emb_context.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
+                                    ocx.embedded_traversal_context = Some(emb_context);
                                 }
-                                emb_context.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
-                                ocx.embedded_traversal_context = Some(emb_context);
-                            }
-                            return set_node_value(node_header, ocx);
-                        } else {
-                            if as_sub_node(node_header).child_container() == PathCompressed {
-                                if !compare_path_compressed_node(node_header, ocx) {
-                                    node_header = update_path_compressed_node(node_header, ocx, ctx);
-                                    return OK;
-                                } else {
-                                    safe_path_compressed_context(node_header, ocx);
-                                }
-                            } else if as_sub_node(node_header).child_container() == ChildLinkType::None {
-                                embed_or_link_child(node_header, ocx, ctx);
+                                set_node_value(node_header, ocx)
                             } else {
-                                let mut next_container: Box<HyperionPointer> = ocx.next_container_pointer.take().unwrap();
-                                let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
-                                    NonNull::new(next_container.as_mut() as *mut HyperionPointer);
-                                get_child_container_pointer(node_header, &mut next_container_pointer, ocx, ctx);
-                                ocx.next_container_pointer = Some(next_container);
+                                if as_sub_node(node_header).child_container() == PathCompressed {
+                                    if !compare_path_compressed_node(node_header, ocx) {
+                                        update_path_compressed_node(node_header, ocx, ctx);
+                                        return OK;
+                                    } else {
+                                        safe_path_compressed_context(node_header, ocx);
+                                    }
+                                } else if as_sub_node(node_header).child_container() == ChildLinkType::None {
+                                    embed_or_link_child(node_header, ocx, ctx);
+                                } else {
+                                    let mut next_container: Box<HyperionPointer> = ocx.next_container_pointer.take().unwrap();
+                                    let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
+                                        NonNull::new(next_container.as_mut() as *mut HyperionPointer);
+                                    get_child_container_pointer(node_header, &mut next_container_pointer, ocx, ctx);
+                                    ocx.next_container_pointer = Some(next_container);
+                                }
+                                OK
+                            }
+                        }
+                        Ordering::Greater => {
+                            ctx.header.set_force_shift_before_insert(true);
+                            if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                                create_node_embedded(
+                                    node_header,
+                                    ocx,
+                                    ctx,
+                                    1,
+                                    false,
+                                    ctx.header.end_operation(),
+                                    ctx.second_char - ctx.last_sub_char_seen,
+                                );
+                            } else {
+                                create_node_embedded(node_header, ocx, ctx, 1, true, ctx.header.end_operation(), 0);
                             }
                             return OK;
                         }
-                    } else {
-                        ctx.header.set_force_shift_before_insert(true);
-                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                            create_node_embedded(
-                                node_header,
-                                ocx,
-                                ctx,
-                                1,
-                                false,
-                                ctx.header.end_operation(),
-                                ctx.second_char - ctx.last_sub_char_seen,
-                            );
-                        } else {
-                            create_node_embedded(node_header, ocx, ctx, 1, true, ctx.header.end_operation(), 0);
-                        }
-                        return OK;
                     }
                 } else {
                     ctx.header.set_force_shift_before_insert(true);
@@ -775,7 +788,6 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
 pub fn scan_put_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> ReturnCode {
     let mut node_head: *mut NodeHeader = null_mut();
     let mut key = 0;
-    let mut top_level_nodes = 0;
     let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
     let root_container: &mut Container = emb_ctx.root_container.as_mut();
     let mut jump_point = NoJump;
@@ -829,32 +841,36 @@ pub fn scan_put_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
             JumpPoint2 => {
                 ocx.jump_context.as_mut().unwrap().top_node_key = key as i32;
 
-                if key < ctx.first_char {
-                    ctx.header.set_last_top_char_set(true);
-                    ctx.last_top_char_seen = key;
-                } else if key == ctx.first_char {
-                    register_jump_context(node_head, ctx, ocx);
-                    if as_top_node(node_head).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
-                        node_head = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
-                        unsafe {
-                            root_container
-                                .wrap_shift_container((node_head as *mut c_void).add(get_offset_node_value(node_head)), size_of::<NodeValue>());
+                match key.cmp(&ctx.first_char) {
+                    Ordering::Less => {
+                        ctx.header.set_last_top_char_set(true);
+                        ctx.last_top_char_seen = key;
+                    }
+                    Ordering::Equal => {
+                        register_jump_context(node_head, ctx, ocx);
+                        if as_top_node(node_head).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
+                            node_head = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
+                            unsafe {
+                                root_container
+                                    .wrap_shift_container((node_head as *mut c_void).add(get_offset_node_value(node_head)), size_of::<NodeValue>());
+                            }
+                            root_container.update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
                         }
-                        root_container.update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
+                        ocx.embedded_traversal_context = Some(emb_ctx);
+                        return set_node_value(node_head, ocx);
                     }
-                    ocx.embedded_traversal_context = Some(emb_ctx);
-                    return set_node_value(node_head, ocx);
-                } else {
-                    ocx.jump_context.as_mut().unwrap().predecessor = None;
-                    ctx.header.set_force_shift_before_insert(true);
-                    ocx.embedded_traversal_context = Some(emb_ctx);
+                    Ordering::Greater => {
+                        ocx.jump_context.as_mut().unwrap().predecessor = None;
+                        ctx.header.set_force_shift_before_insert(true);
+                        ocx.embedded_traversal_context = Some(emb_ctx);
 
-                    if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
-                        create_node(node_head, ocx, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
-                    } else {
-                        create_node(node_head, ocx, ctx, 0, true, true, 0);
+                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, ocx, ctx, 0, false, true, ctx.first_char - ctx.last_top_char_seen);
+                        } else {
+                            create_node(node_head, ocx, ctx, 0, true, true, 0);
+                        }
+                        return OK;
                     }
-                    return OK;
                 }
 
                 if as_top_node(node_head).jump_successor_present() {
@@ -866,7 +882,6 @@ pub fn scan_put_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
                 ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
                     unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
                 ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
-                top_level_nodes += 1;
                 jump_point = NoJump;
                 continue;
             },
@@ -877,7 +892,6 @@ pub fn scan_put_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
 pub fn scan_put_phase2(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> ReturnCode {
     let mut node_head: *mut NodeHeader = null_mut();
     let mut key = 0;
-    let mut force_skip: bool = false;
     let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
     let root_container: &mut Container = emb_ctx.root_container.as_mut();
     let mut jump_point = NoJump;
@@ -915,74 +929,78 @@ pub fn scan_put_phase2(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
                 if as_top_node(node_head).container_type() == 1 {
                     key = get_top_node_key(node_head as *mut Node, ctx);
 
-                    if key < ctx.second_char {
-                        ctx.current_container_offset += get_offset_sub_node(node_head) as i32;
-                        node_head =
-                            unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-                        ctx.header.set_last_sub_char_set(true);
-                        ctx.last_sub_char_seen = key;
-                        ocx.jump_context.as_mut().unwrap().sub_nodes_seen += 1;
+                    match key.cmp(&ctx.second_char) {
+                        Ordering::Less => {
+                            ctx.current_container_offset += get_offset_sub_node(node_head) as i32;
+                            node_head =
+                                unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                            ctx.header.set_last_sub_char_set(true);
+                            ctx.last_sub_char_seen = key;
+                            ocx.jump_context.as_mut().unwrap().sub_nodes_seen += 1;
 
-                        if ocx.jump_context.as_mut().unwrap().sub_nodes_seen >= SUBLEVEL_JUMPTABLE_HWM as i32 {
-                            ocx.embedded_traversal_context = Some(emb_ctx);
-                            create_sublevel_jumptable(node_head, ocx, ctx);
-                            ctx.flush();
-                            ocx.flush_jump_context();
-                            ocx.flush_jump_table_sub_context();
-                            ctx.current_container_offset =
-                                ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_container_head_size();
-                            return scan_put(ocx, ctx);
-                        }
-                    } else if key == ctx.second_char {
-                        if ctx.header.end_operation() {
-                            if as_top_node(node_head).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
-                                node_head = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
-                                unsafe {
-                                    emb_ctx.root_container.as_mut().wrap_shift_container(
-                                        (node_head as *mut c_void).add(get_offset_node_value(node_head)),
-                                        size_of::<NodeValue>(),
-                                    );
-                                }
-                                emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
+                            if ocx.jump_context.as_mut().unwrap().sub_nodes_seen >= SUBLEVEL_JUMPTABLE_HWM as i32 {
+                                ocx.embedded_traversal_context = Some(emb_ctx);
+                                create_sublevel_jumptable(node_head, ocx, ctx);
+                                ctx.flush();
+                                ocx.flush_jump_context();
+                                ocx.flush_jump_table_sub_context();
+                                ctx.current_container_offset =
+                                    ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_container_head_size();
+                                return scan_put(ocx, ctx);
                             }
-                            set_node_value(node_head, ocx);
-                        } else {
-                            match as_sub_node(node_head).child_container() {
-                                ChildLinkType::None => {
-                                    node_head = embed_or_link_child(node_head, ocx, ctx);
-                                },
-                                PathCompressed => {
-                                    if !compare_path_compressed_node(node_head, ocx) {
-                                        node_head = update_path_compressed_node(node_head, ocx, ctx);
-                                    } else {
-                                        safe_path_compressed_context(node_head, ocx);
-                                        node_head = embed_or_link_child(node_head, ocx, ctx);
+                        }
+                        Ordering::Equal => {
+                            if ctx.header.end_operation() {
+                                if as_top_node(node_head).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
+                                    node_head = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
+                                    unsafe {
+                                        emb_ctx.root_container.as_mut().wrap_shift_container(
+                                            (node_head as *mut c_void).add(get_offset_node_value(node_head)),
+                                            size_of::<NodeValue>(),
+                                        );
                                     }
-                                },
-                                _ => {
-                                    let mut next_container: Box<HyperionPointer> = ocx.next_container_pointer.take().unwrap();
-                                    let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
-                                        NonNull::new(next_container.as_mut() as *mut HyperionPointer);
-                                    get_child_container_pointer(node_head, &mut next_container_pointer, ocx, ctx);
-                                    ocx.next_container_pointer = Some(next_container);
-                                },
+                                    emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
+                                }
+                                set_node_value(node_head, ocx);
+                            } else {
+                                match as_sub_node(node_head).child_container() {
+                                    ChildLinkType::None => {
+                                        node_head = embed_or_link_child(node_head, ocx, ctx);
+                                    },
+                                    PathCompressed => {
+                                        if !compare_path_compressed_node(node_head, ocx) {
+                                            node_head = update_path_compressed_node(node_head, ocx, ctx);
+                                        } else {
+                                            safe_path_compressed_context(node_head, ocx);
+                                            node_head = embed_or_link_child(node_head, ocx, ctx);
+                                        }
+                                    },
+                                    _ => {
+                                        let mut next_container: Box<HyperionPointer> = ocx.next_container_pointer.take().unwrap();
+                                        let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
+                                            NonNull::new(next_container.as_mut() as *mut HyperionPointer);
+                                        get_child_container_pointer(node_head, &mut next_container_pointer, ocx, ctx);
+                                        ocx.next_container_pointer = Some(next_container);
+                                    },
+                                }
                             }
+                            ocx.embedded_traversal_context = Some(emb_ctx);
+                            return OK;
                         }
-                        ocx.embedded_traversal_context = Some(emb_ctx);
-                        return OK;
-                    } else {
-                        ctx.header.set_force_shift_before_insert(true);
-                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                            create_node(node_head, ocx, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
-                        } else {
-                            if !ctx.header.last_sub_char_set() {
-                                ctx.header.set_last_sub_char_set(true);
-                                ctx.last_sub_char_seen = 0;
+                        Ordering::Greater => {
+                            ctx.header.set_force_shift_before_insert(true);
+                            if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                                create_node(node_head, ocx, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                            } else {
+                                if !ctx.header.last_sub_char_set() {
+                                    ctx.header.set_last_sub_char_set(true);
+                                    ctx.last_sub_char_seen = 0;
+                                }
+                                create_node(node_head, ocx, ctx, 1, true, ctx.header.end_operation(), 0);
                             }
-                            create_node(node_head, ocx, ctx, 1, true, ctx.header.end_operation(), 0);
+                            ocx.embedded_traversal_context = Some(emb_ctx);
+                            return OK;
                         }
-                        ocx.embedded_traversal_context = Some(emb_ctx);
-                        return OK;
                     }
                 } else {
                     ctx.header.set_force_shift_before_insert(true);
@@ -996,13 +1014,14 @@ pub fn scan_put_phase2(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
                 }
             },
             _ => {
-                continue;
+                break;
             },
         }
     }
+    OK
 }
 
-pub fn scan_put_phase2_withjt(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, destination: i32) -> ReturnCode {
+pub fn scan_put_phase2_withjt(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, destination: u8) -> ReturnCode {
     let mut node_head: *mut NodeHeader = null_mut();
     let mut key = destination;
     let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
@@ -1041,7 +1060,7 @@ pub fn scan_put_phase2_withjt(ocx: &mut OperationContext, ctx: &mut ContainerTra
             JumpPoint1 => {
                 jump_point = NoJump;
                 if as_top_node(node_head).container_type() == 1 {
-                    key = get_top_node_key(node_head as *mut Node, ctx) as i32;
+                    key = get_top_node_key(node_head as *mut Node, ctx);
                     jump_point = JumpPoint2;
                     continue;
                 } else {
@@ -1058,60 +1077,64 @@ pub fn scan_put_phase2_withjt(ocx: &mut OperationContext, ctx: &mut ContainerTra
             JumpPoint2 => {
                 jump_point = NoJump;
 
-                if key < ctx.second_char as i32 {
-                    ctx.current_container_offset += get_offset_sub_node(node_head) as i32;
-                    node_head =
-                        unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-                    ctx.header.set_last_sub_char_set(true);
-                    ctx.last_sub_char_seen = key as u8;
-                } else if key == ctx.second_char as i32 {
-                    if ctx.header.end_operation() {
-                        if as_top_node(node_head).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
-                            node_head = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
-                            unsafe {
-                                emb_ctx
-                                    .root_container
-                                    .as_mut()
-                                    .wrap_shift_container((node_head as *mut c_void).add(get_offset_node_value(node_head)), size_of::<NodeValue>());
-                            }
-                            emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
-                        }
-                        set_node_value(node_head, ocx);
-                    } else {
-                        match as_sub_node(node_head).child_container() {
-                            ChildLinkType::None => {
-                                node_head = embed_or_link_child(node_head, ocx, ctx);
-                            },
-                            PathCompressed => {
-                                if !compare_path_compressed_node(node_head, ocx) {
-                                    node_head = update_path_compressed_node(node_head, ocx, ctx);
-                                } else {
-                                    safe_path_compressed_context(node_head, ocx);
-                                    node_head = embed_or_link_child(node_head, ocx, ctx);
+                match key.cmp(&ctx.second_char) {
+                    Ordering::Less => {
+                        ctx.current_container_offset += get_offset_sub_node(node_head) as i32;
+                        node_head =
+                            unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                        ctx.header.set_last_sub_char_set(true);
+                        ctx.last_sub_char_seen = key;
+                    }
+                    Ordering::Equal => {
+                        if ctx.header.end_operation() {
+                            if as_top_node(node_head).type_flag() != LeafNodeWithValue && ocx.input_value.is_some() {
+                                node_head = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
+                                unsafe {
+                                    emb_ctx
+                                        .root_container
+                                        .as_mut()
+                                        .wrap_shift_container((node_head as *mut c_void).add(get_offset_node_value(node_head)), size_of::<NodeValue>());
                                 }
-                            },
-                            _ => {
-                                let mut next_container: Box<HyperionPointer> = ocx.next_container_pointer.take().unwrap();
-                                let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
-                                    NonNull::new(next_container.as_mut() as *mut HyperionPointer);
-                                get_child_container_pointer(node_head, &mut next_container_pointer, ocx, ctx);
-                                ocx.next_container_pointer = Some(next_container);
-                            },
+                                emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
+                            }
+                            set_node_value(node_head, ocx);
+                        } else {
+                            match as_sub_node(node_head).child_container() {
+                                ChildLinkType::None => {
+                                    node_head = embed_or_link_child(node_head, ocx, ctx);
+                                },
+                                PathCompressed => {
+                                    if !compare_path_compressed_node(node_head, ocx) {
+                                        node_head = update_path_compressed_node(node_head, ocx, ctx);
+                                    } else {
+                                        safe_path_compressed_context(node_head, ocx);
+                                        node_head = embed_or_link_child(node_head, ocx, ctx);
+                                    }
+                                },
+                                _ => {
+                                    let mut next_container: Box<HyperionPointer> = ocx.next_container_pointer.take().unwrap();
+                                    let mut next_container_pointer: Option<NonNull<HyperionPointer>> =
+                                        NonNull::new(next_container.as_mut() as *mut HyperionPointer);
+                                    get_child_container_pointer(node_head, &mut next_container_pointer, ocx, ctx);
+                                    ocx.next_container_pointer = Some(next_container);
+                                },
+                            }
                         }
+                        ocx.embedded_traversal_context = Some(emb_ctx);
+                        return OK;
                     }
-                    ocx.embedded_traversal_context = Some(emb_ctx);
-                    return OK;
-                } else {
-                    ctx.header.set_force_shift_before_insert(true);
-                    if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
-                        create_node(node_head, ocx, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
-                    } else {
-                        create_node(node_head, ocx, ctx, 1, true, ctx.header.end_operation(), 0);
+                    Ordering::Greater => {
+                        ctx.header.set_force_shift_before_insert(true);
+                        if ctx.header.last_sub_char_set() && (ctx.second_char - ctx.last_sub_char_seen) as usize <= KEY_DELTA_STATES {
+                            create_node(node_head, ocx, ctx, 1, false, ctx.header.end_operation(), ctx.second_char - ctx.last_sub_char_seen);
+                        } else {
+                            create_node(node_head, ocx, ctx, 1, true, ctx.header.end_operation(), 0);
+                        }
+                        ocx.embedded_traversal_context = Some(emb_ctx);
+                        return OK;
                     }
-                    ocx.embedded_traversal_context = Some(emb_ctx);
-                    return OK;
                 }
-            },
+            }
         }
     }
 }
@@ -1186,81 +1209,85 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
             JumpPoint2 => {
                 toplevel_nodes -= 1;
 
-                if ocx.jump_context.as_mut().unwrap().top_node_key < (ctx.first_char as i32) {
-                    ctx.header.set_last_top_char_set(true);
-                    ctx.last_top_char_seen = ocx.jump_context.as_mut().unwrap().top_node_key as u8;
+                match ocx.jump_context.as_mut().unwrap().top_node_key.cmp(&(ctx.first_char as i32)) {
+                    Ordering::Less => {
+                        ctx.header.set_last_top_char_set(true);
+                        ctx.last_top_char_seen = ocx.jump_context.as_mut().unwrap().top_node_key as u8;
 
-                    if ocx.jump_context.as_mut().unwrap().sub_nodes_seen
-                        > unsafe { GLOBAL_CONFIG.lock().unwrap().top_level_successor_threshold as i32 }
-                    {
-                        let jump_value = unsafe {
-                            ((node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as u16)
-                                - ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as u16
-                        };
-                        node_head = insert_jump(ocx, ctx, jump_value);
+                        if ocx.jump_context.as_mut().unwrap().sub_nodes_seen
+                            > unsafe { GLOBAL_CONFIG.lock().unwrap().top_level_successor_threshold as i32 }
+                        {
+                            let jump_value = unsafe {
+                                ((node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as u16)
+                                    - ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as u16
+                            };
+                            node_head = insert_jump(ocx, ctx, jump_value);
+                        }
+                        ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
+
+                        if as_top_node(node_head).jump_successor_present() {
+                            ctx.current_container_offset += get_jump_value(node_head) as i32;
+                            ocx.jump_context.as_mut().unwrap().predecessor =
+                                unsafe { Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader)) };
+                            ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
+                                unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
+                            node_head =
+                                unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                            jump_point = JumpPoint1;
+                            continue;
+                        }
+
+                        ocx.jump_context.as_mut().unwrap().predecessor = unsafe { Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader)) };
+                        ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
+                            unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
+                        ctx.current_container_offset += get_offset_top_node(node_head) as i32;
+                        node_head =
+                            unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+                        jump_point = NoJump;
+                        continue;
                     }
-                    ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
-
-                    if as_top_node(node_head).jump_successor_present() {
-                        ctx.current_container_offset += get_jump_value(node_head) as i32;
-                        ocx.jump_context.as_mut().unwrap().predecessor =
+                    Ordering::Equal => {
+                        ctx.header.set_in_first_char_scope(true);
+                        if ocx.jump_context.as_mut().unwrap().sub_nodes_seen
+                            > unsafe { GLOBAL_CONFIG.lock().unwrap().top_level_successor_threshold as i32 }
+                        {
+                            let jump_distance = unsafe {
+                                ((node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as u16)
+                                    - ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as u16
+                            };
+                            node_head = insert_jump(ocx, ctx, jump_distance);
+                        }
+                        ocx.jump_table_sub_context.as_mut().unwrap().top_node =
                             unsafe { Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader)) };
                         ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
                             unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
+                        ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
+                        ocx.jump_context.as_mut().unwrap().predecessor = unsafe { Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader)) };
+
+                        ocx.embedded_traversal_context = Some(emb_ctx);
+
+                        if as_top_node(node_head).jump_table_present() {
+                            let destination = use_sub_node_jump_table(node_head, ctx);
+                            return scan_put_phase2_withjt(ocx, ctx, destination);
+                        }
+                        ctx.current_container_offset += get_offset(node_head) as i32;
+                        return scan_put_phase2(ocx, ctx);
+                    }
+                    Ordering::Greater => {
+                        ctx.header.set_force_shift_before_insert(true);
+                        ocx.flush_jump_context();
+
+                        if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
+                            node_head = create_node(node_head, ocx, ctx, 0, false, false, ctx.first_char - ctx.last_top_char_seen);
+                        } else {
+                            node_head = create_node(node_head, ocx, ctx, 0, true, false, 0);
+                        }
+                        ctx.current_container_offset = get_offset_top_node(node_head) as i32;
                         node_head =
                             unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-                        jump_point = JumpPoint1;
-                        continue;
+                        create_node(node_head, ocx, ctx, 1, true, ctx.header.end_operation(), ctx.second_char);
+                        return OK;
                     }
-
-                    ocx.jump_context.as_mut().unwrap().predecessor = unsafe { Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader)) };
-                    ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
-                        unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
-                    ctx.current_container_offset += get_offset_top_node(node_head) as i32;
-                    node_head =
-                        unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-                    jump_point = NoJump;
-                    continue;
-                } else if ocx.jump_context.as_mut().unwrap().top_node_key == (ctx.first_char as i32) {
-                    ctx.header.set_in_first_char_scope(true);
-                    if ocx.jump_context.as_mut().unwrap().sub_nodes_seen
-                        > unsafe { GLOBAL_CONFIG.lock().unwrap().top_level_successor_threshold as i32 }
-                    {
-                        let jump_distance = unsafe {
-                            ((node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as u16)
-                                - ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as u16
-                        };
-                        node_head = insert_jump(ocx, ctx, jump_distance);
-                    }
-                    ocx.jump_table_sub_context.as_mut().unwrap().top_node =
-                        unsafe { Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader)) };
-                    ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute =
-                        unsafe { (node_head as *mut c_void).offset_from(root_container as *mut Container as *mut c_void) as i32 };
-                    ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
-                    ocx.jump_context.as_mut().unwrap().predecessor = unsafe { Some(Box::from_raw(node_head.as_mut().unwrap() as *mut NodeHeader)) };
-
-                    ocx.embedded_traversal_context = Some(emb_ctx);
-
-                    if as_top_node(node_head).jump_table_present() {
-                        let destination = use_sub_node_jump_table(node_head, ctx) as i32;
-                        return scan_put_phase2_withjt(ocx, ctx, destination);
-                    }
-                    ctx.current_container_offset += get_offset(node_head) as i32;
-                    return scan_put_phase2(ocx, ctx);
-                } else {
-                    ctx.header.set_force_shift_before_insert(true);
-                    ocx.flush_jump_context();
-
-                    if ctx.header.last_top_char_set() && (ctx.first_char - ctx.last_top_char_seen) as usize <= KEY_DELTA_STATES {
-                        node_head = create_node(node_head, ocx, ctx, 0, false, false, ctx.first_char - ctx.last_top_char_seen);
-                    } else {
-                        node_head = create_node(node_head, ocx, ctx, 0, true, false, 0);
-                    }
-                    ctx.current_container_offset = get_offset_top_node(node_head) as i32;
-                    node_head =
-                        unsafe { (root_container as *mut Container as *mut char).add(ctx.current_container_offset as usize) as *mut NodeHeader };
-                    create_node(node_head, ocx, ctx, 1, true, ctx.header.end_operation(), ctx.second_char);
-                    return OK;
                 }
             },
         }

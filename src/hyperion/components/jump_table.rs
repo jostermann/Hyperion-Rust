@@ -3,6 +3,7 @@ use bitfield_struct::bitfield;
 pub const SUBLEVEL_JUMPTABLE_ENTRIES: usize = 15;
 pub const SUBLEVEL_JUMPTABLE_SHIFTBITS: usize = 4;
 pub const TOPLEVEL_JUMPTABLE_ENTRIES: usize = 7;
+pub const TOPLEVEL_NODE_JUMP_HWM: usize = 9;
 
 #[derive(Copy, Clone)]
 pub struct TopNodeJumpTable {

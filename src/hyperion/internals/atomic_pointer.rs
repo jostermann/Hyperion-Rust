@@ -64,6 +64,11 @@ impl<T> AtomicPointer<T> {
     pub fn borrow_mut(&mut self) -> &mut T {
         unsafe { self.get().as_mut().unwrap() }
     }
+
+    pub fn add(&mut self, offset: usize) {
+        let ptr: *mut T = self.add_get(offset);
+        self.store(ptr);
+    }
 }
 
 pub type Atomicu8 = AtomicPointer<u8>;
@@ -72,7 +77,7 @@ pub type AtomicContainer = AtomicPointer<Container>;
 pub type AtomicEmbContainer = AtomicPointer<EmbeddedContainer>;
 pub type AtomicHyperionPointer = AtomicPointer<HyperionPointer>;
 pub type AtomicHeader = AtomicPointer<NodeHeader>;
-pub type AtomicChar = AtomicPointer<char>;
+pub type AtomicChar = AtomicPointer<u8>;
 pub type AtomicRootEntry = AtomicPointer<RootContainerEntry>;
 pub type AtomicPCContext = AtomicPointer<PathCompressedEjectionContext>;
 pub type AtomicNodeValue = AtomicPointer<NodeValue>;

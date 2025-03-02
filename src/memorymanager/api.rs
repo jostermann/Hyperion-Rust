@@ -6,10 +6,11 @@ use crate::memorymanager::components::bin::Bin;
 use crate::memorymanager::components::superbin::SUPERBLOCK_ARRAY_MAXSIZE;
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, free_mmap, AllocatedBy};
 use crate::memorymanager::internals::compression::{decompress_extended, CompressionState};
-use crate::memorymanager::internals::core::{free_from_pointer, get_chunk, get_new_pointer, reallocate_from_pointer, roundup, CONTAINER_SPLIT_BITS};
+use crate::memorymanager::internals::core::{free_from_pointer, get_chunk, get_new_pointer, reallocate_from_pointer, roundup};
 pub use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 pub use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 pub use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
+pub use crate::memorymanager::internals::core::{CONTAINER_SPLIT_BITS, CONTAINER_MAX_SPLITS};
 
 pub const ARENA_COMPRESSION: usize = 16646144;
 

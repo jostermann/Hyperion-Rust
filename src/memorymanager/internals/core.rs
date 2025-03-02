@@ -18,6 +18,7 @@ use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 pub const INCREMENT_SIZE_EXT: usize = 4096;
 pub const INCREMENT_SIZE_EXT_TIGHT: usize = 256;
 pub const CONTAINER_SPLIT_BITS: usize = 3;
+pub const CONTAINER_MAX_SPLITS: usize = 1 << CONTAINER_SPLIT_BITS;
 #[allow(unused)]
 pub const PROBE_COMPRESSION_INTERVAL_INACTIVE: usize = 16777216;
 pub const OVERALLOCATION_CAPACITY: usize = 5120;

@@ -156,7 +156,7 @@ pub fn update_successor_key(node: *mut Node, diff: u8, absolute_key: u8, skipped
 
                 ocx.jump_context.as_mut().unwrap().sub_nodes_seen = 0;
                 ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute = unsafe {
-                    ((&mut (*node).header) as *mut NodeHeader as *mut c_void).offset_from(ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void) as i32
+                    ((&mut (*node).header) as *mut NodeHeader as *mut c_void).offset_from(ocx.get_root_container_pointer() as *mut c_void) as i32
                 };
                 let last_key_seen: i32 = ocx.jump_context.as_mut().unwrap().top_node_key;
                 ocx.jump_context.as_mut().unwrap().top_node_key = absolute_key as i32;

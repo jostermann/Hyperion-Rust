@@ -523,14 +523,14 @@ pub fn insert_jump(ocx: &mut OperationContext, ctx: &mut ContainerTraversalConte
     };
     assert!(ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute > 0);
     assert_eq!(as_top_node(node_head).container_type(), 0);
-    let free_size_left: usize = ocx.embedded_traversal_context.as_mut().unwrap().root_container.deref_mut().free_bytes() as usize;
+    let free_size_left: usize = ocx.get_root_container().free_bytes() as usize;
     unsafe {
         let node_offset_to_jump: usize = get_offset_jump(node_head);
         let target: *mut c_void = (node_head as *mut c_void).add(node_offset_to_jump);
         shift_container(
             target,
             size_of::<u16>(),
-            ocx.embedded_traversal_context.as_mut().unwrap().root_container.deref_mut().size() as usize
+            ocx.get_root_container().size() as usize
                 - (free_size_left + node_offset_to_jump + ocx.jump_context.as_mut().unwrap().top_node_predecessor_offset_absolute as usize),
         );
 
@@ -541,8 +541,7 @@ pub fn insert_jump(ocx: &mut OperationContext, ctx: &mut ContainerTraversalConte
         root_container.update_space_usage(size_of::<u16>() as i16, ocx, ctx);
         ocx.embedded_traversal_context = Some(etc);
         ctx.current_container_offset += size_of::<u16>() as i32;
-        (ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void)
-            .add(ctx.current_container_offset as usize) as *mut NodeHeader
+        (ocx.get_root_container_pointer() as *mut c_void).add(ctx.current_container_offset as usize) as *mut NodeHeader
     }
 }
 
@@ -944,8 +943,7 @@ pub fn scan_put_phase2(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
                                 ctx.flush();
                                 ocx.flush_jump_context();
                                 ocx.flush_jump_table_sub_context();
-                                ctx.current_container_offset =
-                                    ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_container_head_size();
+                                ctx.current_container_offset = ocx.get_root_container().get_container_head_size();
                                 return scan_put(ocx, ctx);
                             }
                         }
@@ -1317,14 +1315,12 @@ pub fn insert_top_level_jumptable(ocx: &mut OperationContext, ctx: &mut Containe
 
     let successor: *mut Node = &mut node_cache as *mut Node;
     let mut skipped = 0;
-    tmp_ctx.current_container_offset = ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_container_head_size()
-        + ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_jump_table_size();
+    tmp_ctx.current_container_offset = ocx.get_root_container().get_container_head_size() + ocx.get_root_container().get_jump_table_size();
 
     unsafe {
-        let mut node_head = (ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void)
-            .add(tmp_ctx.current_container_offset as usize) as *mut NodeHeader;
+        let mut node_head = (ocx.get_root_container_pointer() as *mut c_void).add(tmp_ctx.current_container_offset as usize) as *mut NodeHeader;
 
-        while (ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().size() as i32) > tmp_ctx.current_container_offset {
+        while (ocx.get_root_container().size() as i32) > tmp_ctx.current_container_offset {
             if as_top_node(node_head).type_flag() == Invalid {
                 break;
             }
@@ -1351,7 +1347,7 @@ pub fn insert_top_level_jumptable(ocx: &mut OperationContext, ctx: &mut Containe
             return;
         }
 
-        let current_jumptable_value = ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().jump_table();
+        let current_jumptable_value = ocx.get_root_container().jump_table();
 
         if (current_jumptable_value < (TOPLEVEL_JUMPTABLE_INCREMENTS as u8))
             && (found >= (current_jumptable_value as usize * TOPLEVEL_JUMPTABLE_ENTRIES + TOPLEVEL_JUMPTABLE_ENTRIES))
@@ -1366,26 +1362,24 @@ pub fn insert_top_level_jumptable(ocx: &mut OperationContext, ctx: &mut Containe
             }
 
             required_max = size_of::<SubNodeJumpTable>() * increment;
-            let free_size_left = ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().free_bytes() as i32;
-            let container_head_size = ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_container_head_size();
-            let bytes_to_move =
-                ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().size() as i32 - container_head_size + free_size_left;
+            let free_size_left = ocx.get_root_container().free_bytes() as i32;
+            let container_head_size = ocx.get_root_container().get_container_head_size();
+            let bytes_to_move = ocx.get_root_container().size() as i32 - container_head_size + free_size_left;
 
             if (free_size_left as usize) < required_max {
                 new_expand(ocx, ctx, required_max as u32);
             }
 
-            let target = (ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut() as *mut Container as *mut c_void)
-                .add(container_head_size as usize);
+            let target = (ocx.get_root_container_pointer() as *mut c_void).add(container_head_size as usize);
             shift_container(target, required_max, bytes_to_move as usize);
             ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth = 0;
             let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
             emb_ctx.root_container.as_mut().update_space_usage(size_of::<TopNodeJumpTable>() as i16, ocx, ctx);
             ocx.embedded_traversal_context = Some(emb_ctx);
-            ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().set_jump_table(current_jumptable_value + increment as u8);
+            ocx.get_root_container().set_jump_table(current_jumptable_value + increment as u8);
         }
 
-        let items = TOPLEVEL_JUMPTABLE_ENTRIES * ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().jump_table() as usize;
+        let items = TOPLEVEL_JUMPTABLE_ENTRIES * ocx.get_root_container().jump_table() as usize;
         let interval: f32 = (found as f32) / (items as f32);
         assert!(interval < TOPLEVEL_NODE_JUMP_HWM as f32);
         let mut jumptable_entry = ocx.embedded_traversal_context.as_mut().unwrap().root_container.as_mut().get_jump_table_pointer();

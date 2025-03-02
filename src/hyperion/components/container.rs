@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::intrinsics::copy;
 use std::ptr::write_bytes;
 use bitfield_struct::bitfield;
 use libc::{memmove, pthread_spinlock_t};
@@ -184,7 +185,7 @@ impl Container {
 }
 
 pub unsafe fn shift_container(start_shift: *mut c_void, shift_len: usize, container_tail: usize) {
-    memmove(start_shift.add(shift_len), start_shift, container_tail);
+    copy(start_shift as *mut u8, start_shift.add(shift_len) as *mut u8, container_tail);
     write_bytes(start_shift as *mut u8, 0, shift_len);
 }
 

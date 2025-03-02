@@ -18,12 +18,11 @@ use crate::hyperion::components::sub_node::{ChildLinkType, SubNode};
 use crate::hyperion::components::top_node::TopNode;
 use crate::hyperion::internals::atomic_pointer::{initialize_container, AtomicChar, AtomicEmbContainer, AtomicNodeValue};
 use crate::hyperion::internals::core::{initialize_ejected_container, HyperionCallback, GLOBAL_CONFIG};
-use crate::hyperion::internals::helpers::{copy_memory_from, copy_memory_to};
 use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 use bitfield_struct::bitfield;
 use libc::{memcmp, memmove, size_t};
 use std::ffi::c_void;
-use std::ptr::{copy, write_bytes, NonNull};
+use std::ptr::{copy, copy_nonoverlapping, write_bytes, NonNull};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -215,11 +214,7 @@ fn get_node_value_pc(node_head: *mut NodeHeader, ocx: &mut OperationContext) -> 
     let pc_head: &PathCompressedNodeHeader = as_path_compressed(node_head);
     if pc_head.value_present() {
         unsafe {
-            copy_memory_from(
-                pc_head.as_raw_char().add(size_of::<PathCompressedNodeHeader>()),
-                ocx.get_return_value_mut() as *mut NodeValue,
-                size_of::<NodeValue>(),
-            )
+            copy_nonoverlapping(pc_head.as_raw_char().add(size_of::<PathCompressedNodeHeader>()) as *mut u8, ocx.get_return_value_mut() as *mut NodeValue as *mut u8, size_of::<NodeValue>());
         }
     }
     ocx.header.set_operation_done(true);
@@ -239,11 +234,7 @@ pub fn get_node_value(node_head: *mut NodeHeader, ocx: &mut OperationContext) ->
 
     if top_node_type == LeafNodeWithValue {
         unsafe {
-            copy_memory_from(
-                as_raw_char(node_head).add(get_offset_node_value(node_head)),
-                ocx.get_return_value_mut() as *mut NodeValue,
-                size_of::<NodeValue>(),
-            );
+            copy_nonoverlapping(as_raw_char(node_head).add(get_offset_node_value(node_head)) as *mut u8, ocx.get_return_value_mut() as *mut NodeValue as *mut u8, size_of::<NodeValue>());
         }
     }
 
@@ -261,7 +252,7 @@ pub fn set_node_value(node_head: *mut NodeHeader, ocx: &mut OperationContext) ->
     if ocx.input_value.is_some() {
         let input_value: &mut NodeValue = ocx.get_input_value_mut();
         unsafe {
-            copy_memory_to(as_raw_char_mut(node_head).add(get_offset_node_value(node_head)), input_value as *const NodeValue, size_of::<NodeValue>());
+            copy_nonoverlapping(as_raw_char_mut(node_head).add(get_offset_node_value(node_head)) as *mut u8, input_value as *const NodeValue as *mut u8, size_of::<NodeValue>());
         }
         as_top_node_mut(node_head).set_type_flag(LeafNodeWithValue);
     } else {
@@ -348,14 +339,14 @@ pub fn safe_path_compressed_context(node_head: *mut NodeHeader, ocx: &mut Operat
 
     if pc_node.value_present() {
         unsafe {
-            copy(
+            copy_nonoverlapping(
                 (pc_node as *const PathCompressedNodeHeader as *const c_void)
                     .add(size_of::<PathCompressedNodeHeader>())
                     .add(size_of::<NodeValue>()) as *const u8,
                 ocx.path_compressed_ejection_context.as_mut().unwrap().partial_key.as_mut_ptr() as *mut u8,
                 pc_node.size() as usize - (size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>()),
             );
-            copy(
+            copy_nonoverlapping(
                 (pc_node as *const PathCompressedNodeHeader as *const c_void)
                     .add(size_of::<PathCompressedNodeHeader>())
                     .add(size_of::<NodeValue>()) as *const u8,
@@ -365,7 +356,7 @@ pub fn safe_path_compressed_context(node_head: *mut NodeHeader, ocx: &mut Operat
         }
     } else {
         unsafe {
-            copy(
+            copy_nonoverlapping(
                 (pc_node as *const PathCompressedNodeHeader as *const c_void).add(size_of::<PathCompressedNodeHeader>()) as *const u8,
                 ocx.path_compressed_ejection_context.as_mut().unwrap().partial_key.as_mut_ptr() as *mut u8,
                 pc_node.size() as usize - size_of::<PathCompressedNodeHeader>(),
@@ -374,7 +365,7 @@ pub fn safe_path_compressed_context(node_head: *mut NodeHeader, ocx: &mut Operat
     }
     ocx.path_compressed_ejection_context.as_mut().unwrap().pec_valid = 1;
     unsafe {
-        copy(
+        copy_nonoverlapping(
             (pc_node as *const PathCompressedNodeHeader as *const c_void) as *const u8,
             &mut ocx.path_compressed_ejection_context.as_mut().unwrap().path_compressed_node_header as *mut PathCompressedNodeHeader as *mut u8,
             size_of::<PathCompressedNodeHeader>(),
@@ -422,7 +413,7 @@ pub fn update_path_compressed_node(mut node: *mut NodeHeader, ocx: &mut Operatio
             value = unsafe { (pc_node as *mut PathCompressedNodeHeader as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) };
         }
         unsafe {
-            copy_memory_from(value, ocx.input_value.as_mut().unwrap().as_mut() as *mut NodeValue, size_of::<NodeValue>());
+            copy_nonoverlapping(value as *mut u8, ocx.input_value.as_mut().unwrap().as_mut() as *mut NodeValue as *mut u8, size_of::<NodeValue>());
         }
         pc_node.set_value_present(true);
     }
@@ -448,7 +439,7 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
     unsafe {
         let target: *mut c_void = (p_new as *mut c_void).add((*p_new).get_container_head_size() as usize);
         let source: *mut c_void = emb_container.get_as_mut_memory().add(size_of::<EmbeddedContainer>());
-        copy_memory_from(source, target, em_csize as usize - size_of::<EmbeddedContainer>());
+        copy_nonoverlapping(source as *mut u8, target as *mut u8, em_csize as usize - size_of::<EmbeddedContainer>());
         (*p_new).set_free_size_left((*p_new).free_bytes() as u32 - (em_csize - size_of::<EmbeddedContainer>() as u32));
     }
     as_sub_node_mut(node_head).set_child_container(ChildLinkType::Link);
@@ -466,7 +457,7 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
             let node_ptr: *mut NodeHeader = node_head;
             let shift_dest: *mut c_void = (node_ptr as *mut c_void).add(get_offset(node_ptr));
             let shift_src: *mut c_void = emb_container.get_as_mut_memory().add(em_csize as usize);
-            memmove(shift_dest, shift_src, size as size_t);
+            copy(shift_src as *mut u8, shift_dest as *mut u8, size as usize);
         }
     }
 
@@ -677,14 +668,14 @@ pub fn embed_or_link_child(mut node_head: *mut NodeHeader, ocx: &mut OperationCo
 
                 if ocx.input_value.is_some() {
                     (*target).set_value_present(true);
-                    copy(
+                    copy_nonoverlapping(
                         ocx.input_value.as_mut().unwrap().as_mut() as *mut NodeValue as *mut u8,
                         target_partial_key as *mut u8,
                         size_of::<NodeValue>(),
                     );
                     target_partial_key = target_partial_key.add(size_of::<NodeValue>());
                 }
-                copy(ocx.key.as_mut().unwrap().get(), target_partial_key as *mut u8, (ocx.key_len_left - 2) as usize);
+                copy_nonoverlapping(ocx.key.as_mut().unwrap().get(), target_partial_key as *mut u8, (ocx.key_len_left - 2) as usize);
                 as_sub_node_mut(node_head).set_child_container(PathCompressed);
             }
 

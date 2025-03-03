@@ -1,7 +1,5 @@
 use std::cmp::Ordering;
-use crate::hyperion::components::container::{
-    get_container_link_size, shift_container, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREESIZE,
-};
+use crate::hyperion::components::container::{get_container_head_size, get_container_link_size, shift_container, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREESIZE};
 use crate::hyperion::components::operation_context::ContainerValidTypes::{ContainerValid, EmbeddedContainerValid};
 use crate::hyperion::components::context::OperationCommand::Put;
 use crate::hyperion::components::context::{ContainerTraversalContext, ContainerTraversalHeader, EmbeddedTraversalContext, JumpContext, PathCompressedEjectionContext, RangeQueryContext, KEY_DELTA_STATES};
@@ -20,7 +18,7 @@ use crate::hyperion::internals::atomic_pointer::{initialize_container, AtomicCha
 use crate::hyperion::internals::core::{initialize_ejected_container, HyperionCallback, GLOBAL_CONFIG};
 use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 use bitfield_struct::bitfield;
-use libc::{memcmp, size_t};
+use libc::{memcmp, memmove, size_t};
 use std::ffi::c_void;
 use std::ptr::{copy, copy_nonoverlapping, write_bytes, NonNull};
 use crate::hyperion::components::operation_context::{meta_expand, new_expand, new_expand_embedded, safe_sub_node_jump_table_context, ContainerValidTypes, OperationContext};
@@ -1137,6 +1135,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
         let absolute_offset = unsafe { (node_head as *mut c_void).offset_from(ocx.get_root_container_pointer() as *mut c_void) };
         let container_tail = ocx.get_root_container().size() as i32 - (absolute_offset as i32 + child_container_offset as i32 + ocx.get_pc_ejection_context().path_compressed_node_header.size() as i32 + free_size_left as i32);
 
+        let new_container;
         unsafe {
             let tail_target = (link as *mut c_void).add(get_container_link_size());
 
@@ -1150,23 +1149,307 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             ocx.embedded_traversal_context = Some(emb_ctx);
 
             (*link).ptr = initialize_container(ocx.arena.as_mut().unwrap().as_mut());
-            let new_container = get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut (*link).ptr, 1, ocx.chained_pointer_hook);
+            new_container = get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut (*link).ptr, 1, ocx.chained_pointer_hook);
             ocx.embedded_traversal_context.as_mut().unwrap().root_container = Box::from_raw(new_container as *mut Container);
         }
 
         let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-        ocx.header.set_next_container_valid(ContainerValid);
         emb_ctx.embedded_container_depth = 0;
+        ocx.header.set_next_container_valid(ContainerValid);
         emb_ctx.next_embedded_container = None;
-        ocx.next_container_pointer = unsafe { Some(Box::new(*(&mut (*link).ptr))) }
+        ocx.next_container_pointer = unsafe { Some(Box::new((*link).ptr.clone())) };
+        emb_ctx.root_container_pointer = Box::new(ocx.next_container_pointer.as_mut().unwrap().as_mut().clone());
+        emb_ctx.root_container = unsafe { Box::from_raw(new_container as *mut Container) };
+        ctx.current_container_offset = emb_ctx.root_container.as_mut().get_container_head_size();
+        ocx.embedded_traversal_context = Some(emb_ctx);
 
+        let data_offset = unsafe { (ocx.get_root_container_pointer() as *mut c_void).add(ocx.get_root_container().get_container_head_size() as usize) };
+        let mut consumed_newcon = 0;
+        assert!(pc_key_len > 0);
 
+        let mut top = data_offset as *mut NodeHeader;
+        as_top_node_mut(top).set_type_flag(InnerNode);
+        unsafe {
+            copy_nonoverlapping(ocx.get_pc_ejection_context().partial_key.as_mut_ptr(), (top as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8, 1);
+        }
+        ctx.current_container_offset += 2;
+
+        if pc_key_len == 1 {
+            if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
+                as_top_node_mut(top).set_type_flag(LeafNodeWithValue);
+                consumed_newcon = 2 + size_of::<NodeValue>();
+                unsafe {
+                    copy_nonoverlapping(
+                        &mut ocx.get_pc_ejection_context().node_value as *mut NodeValue as *mut u8,
+                        (top as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    size_of::<NodeValue>());
+                }
+            }
+            else {
+                as_top_node_mut(top).set_type_flag(LeafNodeEmpty);
+                consumed_newcon = 2;
+            }
+        }
+        else if pc_key_len == 2 {
+            let sub = unsafe {
+                data_offset.add(size_of::<NodeHeader>() + 1) as *mut NodeHeader
+            };
+            as_sub_node_mut(sub).set_container_type(1);
+            unsafe {
+                copy_nonoverlapping(
+                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(1),
+                    (sub as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    1
+                );
+            }
+
+            if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
+                as_sub_node_mut(sub).set_type_flag(LeafNodeWithValue);
+                consumed_newcon = 4 + size_of::<NodeValue>();
+                unsafe {
+                    copy_nonoverlapping(
+                        ocx.get_pc_ejection_context().partial_key.as_mut_ptr(),
+                        (sub as *mut c_void).add(size_of::<NodeHeader>() + 1) as *mut u8,
+                    size_of::<NodeValue>());
+                }
+            }
+            else {
+                as_sub_node_mut(sub).set_type_flag(LeafNodeEmpty);
+                consumed_newcon = 4;
+            }
+        }
+        else {
+            let mut sub = unsafe {
+                data_offset.add(size_of::<NodeHeader>() + 1) as *mut NodeHeader
+            };
+            as_sub_node_mut(sub).set_container_type(1);
+            as_sub_node_mut(sub).set_type_flag(InnerNode);
+            unsafe {
+                copy_nonoverlapping(
+                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(1),
+                    (sub as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    1
+                );
+            }
+
+            as_sub_node_mut(sub).set_child_container(PathCompressed);
+            let remaining_pc_key_len = pc_key_len - 2;
+            let required = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize * size_of::<NodeValue>() + remaining_pc_key_len + 1;
+            consumed_newcon = 2 + 2 * size_of::<NodeHeader>() + required;
+            sub = meta_expand(ocx, ctx, consumed_newcon as u32);
+
+            let pc_node = unsafe {
+                (sub as *mut c_void).add(size_of::<NodeHeader>() + 1) as *mut PathCompressedNodeHeader
+            };
+
+            unsafe {
+                if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
+                    (*pc_node).set_value_present(true);
+                    (*pc_node).set_size((size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>() + remaining_pc_key_len) as u8);
+                    copy_nonoverlapping(
+                        &mut ocx.get_pc_ejection_context().node_value as *mut NodeValue as *mut u8,
+                        (pc_node as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) as *mut u8,
+                        size_of::<NodeValue>()
+                    );
+                    copy_nonoverlapping(
+                        ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(2),
+                        (pc_node as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) as *mut u8,
+                        remaining_pc_key_len
+                    );
+                }
+                else {
+                    (*pc_node).set_value_present(false);
+                    (*pc_node).set_size((size_of::<PathCompressedNodeHeader>() + remaining_pc_key_len) as u8);
+                    copy_nonoverlapping(
+                        ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(2),
+                        (pc_node as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) as *mut u8,
+                        remaining_pc_key_len
+                    );
+                }
+            }
+        }
+        assert!(ocx.get_root_container().free_bytes() as usize >= consumed_newcon);
+        let current_value = ocx.get_root_container().free_bytes();
+        ocx.get_root_container().set_free_bytes(current_value - consumed_newcon as u8);
+        ocx.flush_jump_context();
+        ocx.flush_jump_table_sub_context();
     }
     else {
+        if ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth == 0 {
+            safe_sub_node_jump_table_context(ocx, ctx);
+        }
 
+        if pc_key_len == 1 {
+            let required = size_of::<NodeHeader>() + size_of::<EmbeddedContainer>() - size_of::<PathCompressedNodeHeader>();
+            node_head = meta_expand(ocx, ctx, required as u32);
+            let child_container = unsafe {
+                (node_head as *mut c_void).add(child_container_offset)
+            };
+            unsafe { ocx.get_root_container().wrap_shift_container(child_container, required); }
+            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
+            emb_ctx.root_container.update_space_usage(required as i16, ocx, ctx);
+            ocx.embedded_traversal_context = Some(emb_ctx);
+
+            unsafe {
+                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container =
+                    Some(Box::from_raw((node_head as *mut c_void).add(child_container_offset) as *mut EmbeddedContainer));
+                let value_present = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
+                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().set_size(
+                    (size_of::<EmbeddedContainer>() + size_of::<NodeHeader>() + 1 + value_present * size_of::<NodeValue>()) as u8
+                );
+                let embedded_top = (node_head as *mut c_void).add(child_container_offset + size_of::<EmbeddedContainer>()) as *mut NodeHeader;
+                write_bytes(embedded_top as *mut u8, 0, size_of::<NodeHeader>());
+
+                if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
+                    as_top_node_mut(embedded_top).set_type_flag(LeafNodeWithValue);
+                    copy_nonoverlapping(
+                        &mut ocx.get_pc_ejection_context().node_value as *mut NodeValue as *mut u8,
+                        (embedded_top as *mut c_void).add(size_of::<NodeHeader>() + 1) as *mut u8,
+                        size_of::<NodeValue>()
+                    );
+                }
+                else {
+                    as_top_node_mut(embedded_top).set_type_flag(LeafNodeEmpty);
+                }
+                copy_nonoverlapping(
+                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr(),
+                    (embedded_top as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    1
+                );
+            }
+        }
+        else if pc_key_len == 2 {
+            let required = size_of::<NodeHeader>() * 2 + size_of::<EmbeddedContainer>() - size_of::<PathCompressedNodeHeader>();
+            node_head = meta_expand(ocx, ctx, required as u32);
+
+            let child_container = unsafe {
+                (node_head as *mut c_void).add(child_container_offset)
+            };
+            unsafe { ocx.get_root_container().wrap_shift_container(child_container, required); }
+
+            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
+            emb_ctx.root_container.update_space_usage(required as i16, ocx, ctx);
+            ocx.embedded_traversal_context = Some(emb_ctx);
+
+            unsafe {
+                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container =
+                    Some(Box::from_raw((node_head as *mut c_void).add(child_container_offset) as *mut EmbeddedContainer));
+                let value_present = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
+                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().set_size(
+                    (size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>()) as u8
+                );
+
+                let embedded_top = (node_head as *mut c_void).add(child_container_offset + size_of::<EmbeddedContainer>()) as *mut NodeHeader;
+                write_bytes(embedded_top as *mut u8, 0, size_of::<NodeHeader>());
+                as_top_node_mut(embedded_top).set_type_flag(InnerNode);
+                copy_nonoverlapping(
+                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr(),
+                    (embedded_top as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    1
+                );
+
+                let embedded_sub = embedded_top.add(size_of::<NodeHeader>() + 1);
+                write_bytes(embedded_sub as *mut u8, 0, 1);
+                as_sub_node_mut(embedded_sub).set_container_type(1);
+
+                if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
+                    as_sub_node_mut(embedded_sub).set_type_flag(LeafNodeWithValue);
+                    copy_nonoverlapping(
+                        &mut ocx.get_pc_ejection_context().node_value as *mut NodeValue as *mut u8,
+                        (embedded_sub as *mut c_void).add(size_of::<NodeHeader>() + 1) as *mut u8,
+                        size_of::<NodeValue>()
+                    );
+                }
+                else {
+                    as_sub_node_mut(embedded_sub).set_type_flag(LeafNodeEmpty);
+                }
+                copy_nonoverlapping(
+                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(1),
+                    (embedded_sub as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    1
+                );
+            }
+        }
+        else {
+            let required = size_of::<NodeHeader>() * 2 + size_of::<EmbeddedContainer>();
+            node_head = meta_expand(ocx, ctx, required as u32);
+
+            let child_container = unsafe { (node_head as *mut c_void).add(child_container_offset) };
+            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
+            emb_ctx.root_container.update_space_usage(required as i16, ocx, ctx);
+            ocx.embedded_traversal_context = Some(emb_ctx);
+
+            let remaining_partial_key = pc_key_len - 2;
+            unsafe {
+                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container =
+                    Some(Box::from_raw((node_head as *mut c_void).add(child_container_offset) as *mut EmbeddedContainer));
+                let value_present = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
+                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().set_size(
+                    (size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>() + remaining_partial_key) as u8
+                );
+
+                let embedded_top = (node_head as *mut c_void).add(child_container_offset + size_of::<EmbeddedContainer>()) as *mut NodeHeader;
+                write_bytes(embedded_top as *mut u8, 0, size_of::<NodeHeader>());
+                as_top_node_mut(embedded_top).set_type_flag(InnerNode);
+                copy_nonoverlapping(
+                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr(),
+                    (embedded_top as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    1
+                );
+
+                let embedded_sub = embedded_top.add(size_of::<NodeHeader>() + 1);
+                write_bytes(embedded_sub as *mut u8, 0, 1);
+                as_sub_node_mut(embedded_sub).set_container_type(1);
+                as_sub_node_mut(embedded_sub).set_type_flag(InnerNode);
+                copy_nonoverlapping(
+                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(1),
+                    (embedded_sub as *mut c_void).add(size_of::<NodeHeader>()) as *mut u8,
+                    1
+                );
+                as_sub_node_mut(embedded_sub).set_child_container(PathCompressed);
+
+                let pc_node = (embedded_sub as *mut c_void).add(size_of::<NodeHeader>() + 1) as *mut PathCompressedNodeHeader;
+
+                if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
+                    (*pc_node).set_value_present(true);
+                    (*pc_node).set_size(
+                        (size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>() + pc_key_len - 2) as u8
+                    );
+                    copy_nonoverlapping(
+                        &mut ocx.get_pc_ejection_context().node_value as *mut NodeValue as *mut u8,
+                        (pc_node as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) as *mut u8,
+                        size_of::<NodeValue>()
+                    );
+                    copy_nonoverlapping(
+                        ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(2),
+                        (pc_node as *mut c_void).add(size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>()) as *mut u8,
+                        pc_key_len - 2
+                    );
+                }
+                else {
+                    (*pc_node).set_value_present(false);
+                    (*pc_node).set_size((size_of::<PathCompressedNodeHeader>() + pc_key_len - 2) as u8);
+                    copy_nonoverlapping(
+                        ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(2),
+                        (pc_node as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) as *mut u8,
+                        pc_key_len - 2
+                    );
+                }
+            }
+        }
+
+        let current_embedded_container_depth = ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth;
+        ocx.embedded_traversal_context.as_mut().unwrap().embedded_stack.as_mut().unwrap()[current_embedded_container_depth as usize] =
+            Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
+        ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth += 1;
+        ocx.next_container_pointer = None;
+
+        as_sub_node_mut(node_head).set_child_container(ChildLinkType::EmbeddedContainer);
+        ocx.path_compressed_ejection_context = None;
+        ocx.header.set_next_container_valid(EmbeddedContainerValid);
+        ctx.current_container_offset += child_container_offset as i32;
+        safe_sub_node_jump_table_context(ocx, ctx);
     }
-
-    todo!()
 }
 
 pub fn inject_sublevel_reference_key(node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, refkey: u8) {

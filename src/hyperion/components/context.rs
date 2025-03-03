@@ -122,7 +122,7 @@ impl ContainerTraversalContext {
 
 pub struct PathCompressedEjectionContext {
     pub node_value: NodeValue,
-    pub partial_key: [char; 127],
+    pub partial_key: [u8; 127],
     pub pec_valid: bool,
     pub path_compressed_node_header: PathCompressedNodeHeader,
 }
@@ -131,7 +131,7 @@ impl Default for PathCompressedEjectionContext {
     fn default() -> Self {
         Self {
             node_value: NodeValue { v: 0 },
-            partial_key: [char::from(0); 127],
+            partial_key: [0; 127],
             pec_valid: false,
             path_compressed_node_header: PathCompressedNodeHeader::default(),
         }

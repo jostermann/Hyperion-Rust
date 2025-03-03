@@ -161,8 +161,8 @@ impl Bin {
     pub(crate) fn allocate_chunk_unchained(&mut self, hyperion_pointer: &mut HyperionPointer) -> bool {
         self.new_chunk_allocation_space_available()
             .map(|candidate| {
-                let index: usize = self.toggle_chunk_usage(candidate as usize);
-                hyperion_pointer.set_chunk_id(index as u16);
+                self.toggle_chunk_usage(candidate as usize);
+                hyperion_pointer.set_chunk_id(candidate as u16);
                 self.header.set_chance2nd_alloc(0);
                 true
             })

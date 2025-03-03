@@ -184,25 +184,25 @@ fn write_header(addr: *mut HyperionPointerHeader, mod_fn: impl FnOnce(&mut Hyper
 }
 
 #[cfg(test)]
-mod pointer_tests {
+mod hyperion_pointer_tests {
     use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 
     #[test]
-    fn test_hyperion_pointer_size() {
-        let mut hp2 = HyperionPointer::default();
-        let size = size_of_val(&hp2);
-        assert_eq!(size, 5);
-        assert_eq!(hp2.superbin_id(), 0);
-        assert_eq!(hp2.metabin_id(), 0);
-        assert_eq!(hp2.bin_id(), 0);
-        assert_eq!(hp2.chunk_id(), 0);
-        hp2.set_superbin_id(12);
-        hp2.set_metabin_id(13);
-        hp2.set_bin_id(14);
-        hp2.set_chunk_id(15);
-        assert_eq!(hp2.superbin_id(), 12);
-        assert_eq!(hp2.metabin_id(), 13);
-        assert_eq!(hp2.bin_id(), 14);
-        assert_eq!(hp2.chunk_id(), 15);
+    fn test_hyperion_pointer() {
+        let mut hyperion_pointer: HyperionPointer = HyperionPointer::default();
+        let size = size_of_val(&hyperion_pointer);
+        assert_eq!(size, 5, "Expected HyperionPointer size to by 5 bytes, but got {} bytes.", size);
+        assert_eq!(hyperion_pointer.superbin_id(), 0, "Default initialization of superbin_id is incorrect. Expected 0, but got {}.", hyperion_pointer.superbin_id());
+        assert_eq!(hyperion_pointer.metabin_id(), 0, "Default initialization of metabin_id is incorrect. Expected 0, but got {}.", hyperion_pointer.metabin_id());
+        assert_eq!(hyperion_pointer.bin_id(), 0, "Default initialization of bin_id is incorrect. Expected 0, but got {}.", hyperion_pointer.bin_id());
+        assert_eq!(hyperion_pointer.chunk_id(), 0, "Default initialization of chunk_id is incorrect. Expected 0, but got {}.", hyperion_pointer.chunk_id());
+        hyperion_pointer.set_superbin_id(12);
+        hyperion_pointer.set_metabin_id(13);
+        hyperion_pointer.set_bin_id(14);
+        hyperion_pointer.set_chunk_id(15);
+        assert_eq!(hyperion_pointer.superbin_id(), 12, "Setting superbin_id failed. Expected 12, but got {}.", hyperion_pointer.superbin_id());
+        assert_eq!(hyperion_pointer.metabin_id(), 13, "Setting metabin_id failed. Expected 13, but got {}.", hyperion_pointer.metabin_id());
+        assert_eq!(hyperion_pointer.bin_id(), 14, "Setting bin_id failed. Expected 14, but got {}.", hyperion_pointer.bin_id());
+        assert_eq!(hyperion_pointer.chunk_id(), 15, "Setting chunk_id failed. Expected 15, but got {}.", hyperion_pointer.chunk_id());
     }
 }

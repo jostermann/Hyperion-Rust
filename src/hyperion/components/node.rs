@@ -1,10 +1,10 @@
-use crate::hyperion::components::container::Container;
-use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext, JumpContext, OperationContext, KEY_DELTA_STATES};
+use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext, JumpContext, KEY_DELTA_STATES};
 use crate::hyperion::components::node_header::{as_sub_node, as_top_node, as_top_node_mut, get_successor, get_successor_embedded, NodeHeader};
 use crate::hyperion::components::return_codes::ReturnCode;
 use crate::hyperion::components::return_codes::ReturnCode::OK;
 use std::ffi::c_void;
 use std::ptr::{copy, write_bytes, NonNull};
+use crate::hyperion::components::operation_context::OperationContext;
 
 #[derive(Debug, PartialEq, PartialOrd)]
 pub enum NodeType {
@@ -136,8 +136,8 @@ pub fn update_successor_key(node: *mut Node, diff: u8, absolute_key: u8, skipped
         let free_size_left: u8 = emb_ctx.root_container.as_mut().free_bytes();
         let remaining: u32 = emb_ctx.root_container.as_mut().size() - (emb_ctx.next_embedded_container_offset as u32 + ctx.current_container_offset as u32 + skipped + 2 + free_size_left as u32);
         unsafe {
-            copy((node as *mut u8).add(size_of::<NodeHeader>() + 1), (node as *mut u8).add(size_of::<NodeHeader>()), remaining as usize);
-            write_bytes((node as *mut u8).add(size_of::<NodeHeader>()), 0, 1);
+            copy(node.add(size_of::<NodeHeader>() + 1) as *mut u8, node.add(size_of::<NodeHeader>()) as *mut u8, remaining as usize);
+            write_bytes(node.add(size_of::<NodeHeader>()) as *mut u8, 0, 1);
         }
 
         if emb_ctx.embedded_container_depth > 0 {

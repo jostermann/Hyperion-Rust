@@ -2,9 +2,9 @@ use std::cmp::Ordering;
 use crate::hyperion::components::container::{
     get_container_link_size, shift_container, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREESIZE,
 };
-use crate::hyperion::components::context::ContainerValidTypes::{ContainerValid, EmbeddedContainerValid};
+use crate::hyperion::components::operation_context::ContainerValidTypes::{ContainerValid, EmbeddedContainerValid};
 use crate::hyperion::components::context::OperationCommand::Put;
-use crate::hyperion::components::context::{meta_expand, new_expand, new_expand_embedded, safe_sub_node_jump_table_context, ContainerTraversalContext, ContainerTraversalHeader, ContainerValidTypes, EmbeddedTraversalContext, JumpContext, OperationContext, PathCompressedEjectionContext, RangeQueryContext, KEY_DELTA_STATES};
+use crate::hyperion::components::context::{ContainerTraversalContext, ContainerTraversalHeader, EmbeddedTraversalContext, JumpContext, PathCompressedEjectionContext, RangeQueryContext, KEY_DELTA_STATES};
 use crate::hyperion::components::jump_table::{TopNodeJumpTable, SUBLEVEL_JUMPTABLE_ENTRIES, SUBLEVEL_JUMPTABLE_SHIFTBITS};
 use crate::hyperion::components::node::NodeType::{InnerNode, Invalid, LeafNodeEmpty, LeafNodeWithValue};
 use crate::hyperion::components::node::{get_sub_node_key, set_nodes_key2, update_successor_key, Node, NodeType, NodeValue};
@@ -20,9 +20,10 @@ use crate::hyperion::internals::atomic_pointer::{initialize_container, AtomicCha
 use crate::hyperion::internals::core::{initialize_ejected_container, HyperionCallback, GLOBAL_CONFIG};
 use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 use bitfield_struct::bitfield;
-use libc::{memcmp, memmove, size_t};
+use libc::{memcmp, size_t};
 use std::ffi::c_void;
 use std::ptr::{copy, copy_nonoverlapping, write_bytes, NonNull};
+use crate::hyperion::components::operation_context::{meta_expand, new_expand, new_expand_embedded, safe_sub_node_jump_table_context, ContainerValidTypes, OperationContext};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -363,7 +364,7 @@ pub fn safe_path_compressed_context(node_head: *mut NodeHeader, ocx: &mut Operat
             );
         }
     }
-    ocx.path_compressed_ejection_context.as_mut().unwrap().pec_valid = 1;
+    ocx.path_compressed_ejection_context.as_mut().unwrap().pec_valid = true;
     unsafe {
         copy_nonoverlapping(
             (pc_node as *const PathCompressedNodeHeader as *const c_void) as *const u8,
@@ -1107,7 +1108,64 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
     }
 }
 
-pub fn transform_pc_node(node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
+pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
+    assert_eq!(as_sub_node(node_head).child_container(), PathCompressed);
+    assert!(ocx.get_pc_ejection_context().pec_valid);
+
+    let child_container_offset = get_offset_child_container(node_head);
+    let pc_key_offset = size_of::<PathCompressedNodeHeader>() + ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize * size_of::<NodeValue>();
+    let pc_key_len = ocx.get_pc_ejection_context().path_compressed_node_header.size() as usize - pc_key_offset;
+    let container_embedding_limit = unsafe { GLOBAL_CONFIG.lock().unwrap().container_embedding_limit };
+    let container_embedding_hwm = unsafe { GLOBAL_CONFIG.lock().unwrap().header.container_embedding_high_watermark() };
+
+    if (ocx.get_root_container().size() >= container_embedding_limit)
+        || (ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth >= CONTAINER_MAX_EMBEDDED_DEPTH as i32)
+        || (ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth > 0
+        && ((ocx.embedded_traversal_context.as_mut().unwrap().embedded_stack.as_mut().unwrap()[0].as_mut().unwrap().borrow_mut().size() as u32) >= (container_embedding_hwm - get_container_link_size() as u32)))
+    {
+        let pc_delta = ocx.get_pc_ejection_context().path_compressed_node_header.size() as i32 - get_container_link_size() as i32;
+        if pc_delta < 0 {
+            node_head = meta_expand(ocx, ctx, get_container_link_size() as u32);
+        }
+
+        as_sub_node_mut(node_head).set_child_container(Link);
+        let free_size_left = ocx.get_root_container().free_bytes();
+
+        let link: *mut ContainerLink = unsafe { (node_head as *mut c_void).add(child_container_offset) as *mut ContainerLink };
+        let diff = get_container_link_size() as i32 - ocx.get_pc_ejection_context().path_compressed_node_header.size() as i32;
+
+        let absolute_offset = unsafe { (node_head as *mut c_void).offset_from(ocx.get_root_container_pointer() as *mut c_void) };
+        let container_tail = ocx.get_root_container().size() as i32 - (absolute_offset as i32 + child_container_offset as i32 + ocx.get_pc_ejection_context().path_compressed_node_header.size() as i32 + free_size_left as i32);
+
+        unsafe {
+            let tail_target = (link as *mut c_void).add(get_container_link_size());
+
+            copy(tail_target.add(pc_delta as usize) as *mut u8, tail_target as *mut u8, container_tail as usize);
+
+            if pc_delta >= 0 {
+                write_bytes(tail_target.add(container_tail as usize) as *mut u8, 0, pc_delta as usize);
+            }
+            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
+            emb_ctx.root_container.as_mut().update_space_usage(diff as i16, ocx, ctx);
+            ocx.embedded_traversal_context = Some(emb_ctx);
+
+            (*link).ptr = initialize_container(ocx.arena.as_mut().unwrap().as_mut());
+            let new_container = get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut (*link).ptr, 1, ocx.chained_pointer_hook);
+            ocx.embedded_traversal_context.as_mut().unwrap().root_container = Box::from_raw(new_container as *mut Container);
+        }
+
+        let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
+        ocx.header.set_next_container_valid(ContainerValid);
+        emb_ctx.embedded_container_depth = 0;
+        emb_ctx.next_embedded_container = None;
+        ocx.next_container_pointer = unsafe { Some(Box::new(*(&mut (*link).ptr))) }
+
+
+    }
+    else {
+
+    }
+
     todo!()
 }
 

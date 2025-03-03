@@ -1,7 +1,8 @@
 use crate::hyperion::components::container::{get_container_head_size, Container, EmbeddedContainer};
-use crate::hyperion::components::context::ContainerValidTypes::ContainerValid;
-use crate::hyperion::components::context::JumpStates::{JumpPoint1, JumpPoint2, NoJump};
-use crate::hyperion::components::context::{insert_jump, insert_top_level_jumptable, new_expand, scan_put, scan_put_embedded, scan_put_single, ContainerTraversalContext, ContainerTraversalHeader, ContainerValidTypes, EmbeddedTraversalContext, OperationCommand, OperationContext, OperationContextHeader, TraversalType};
+use crate::hyperion::components::operation_context::ContainerValidTypes::ContainerValid;
+use crate::hyperion::components::operation_context::JumpStates::{JumpPoint1, JumpPoint2, NoJump};
+use crate::hyperion::components::context::{ContainerTraversalContext, ContainerTraversalHeader, EmbeddedTraversalContext, OperationCommand, TraversalType};
+use crate::hyperion::components::operation_context::OperationContextHeader;
 use crate::hyperion::components::jump_table::TOPLEVEL_NODE_JUMP_HWM;
 use crate::hyperion::components::node::NodeType::Invalid;
 use crate::hyperion::components::node::{get_sub_node_key, get_top_node_key, Node};
@@ -20,6 +21,7 @@ use std::cmp::Ordering;
 use std::ffi::c_void;
 use std::ptr::{copy, copy_nonoverlapping, null, null_mut, write_bytes, NonNull};
 use std::sync::Mutex;
+use crate::hyperion::components::operation_context::{insert_jump, insert_top_level_jumptable, new_expand, scan_put, scan_put_embedded, scan_put_single, ContainerValidTypes, OperationContext};
 
 pub const CONTAINER_SPLIT_THRESHOLD_A: usize = 12288;
 pub const CONTAINER_SPLIT_THRESHOLD_B: usize = 65536;

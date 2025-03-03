@@ -2,11 +2,12 @@ use std::ffi::c_void;
 use std::intrinsics::copy;
 use std::ptr::write_bytes;
 use bitfield_struct::bitfield;
-use libc::{memmove, pthread_spinlock_t};
+use libc::pthread_spinlock_t;
 
-use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext, OperationContext};
+use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext};
 use crate::hyperion::components::jump_table::{SubNodeJumpTable, SubNodeJumpTableEntry, SUBLEVEL_JUMPTABLE_ENTRIES, SUBLEVEL_JUMPTABLE_SHIFTBITS, TOPLEVEL_JUMPTABLE_ENTRIES};
 use crate::hyperion::components::node_header::{as_top_node, get_offset_jump_table, NodeHeader};
+use crate::hyperion::components::operation_context::OperationContext;
 use crate::hyperion::internals::atomic_pointer::{AtomicArena, CONTAINER_SIZE_TYPE_0};
 use crate::hyperion::internals::core::GLOBAL_CONFIG;
 use crate::memorymanager::api::HyperionPointer;
@@ -74,19 +75,18 @@ impl Container {
         if self.jump_table() == 0 {
             return;
         }
-        let top_node_key = operation_context.jump_context.as_mut().unwrap().top_node_key;
+
         let embedded_context: &mut Option<EmbeddedTraversalContext> = &mut operation_context.embedded_traversal_context;
         let root_container: &mut Container = embedded_context.as_mut().unwrap().root_container.as_mut();
 
-        let items = TOPLEVEL_JUMPTABLE_ENTRIES * self.jump_table() as usize;
         let jump_table_entry_base: *mut SubNodeJumpTableEntry = root_container.get_jump_table_pointer();
         let mut jump_table_entry: *mut SubNodeJumpTableEntry = jump_table_entry_base;
 
-        for i in (0..items).rev() {
+        for i in (0..TOPLEVEL_JUMPTABLE_ENTRIES * self.jump_table() as usize).rev() {
             unsafe {
                 jump_table_entry = jump_table_entry_base.add(i);
 
-                if (*jump_table_entry).key() as i32 > top_node_key {
+                if (*jump_table_entry).key() as i32 > operation_context.jump_context.as_mut().unwrap().top_node_key {
                     let current_offset: u32 = (*jump_table_entry).offset();
                     (*jump_table_entry).set_offset(current_offset + usage_delta as u32);
                 } else {
@@ -115,8 +115,8 @@ impl Container {
             let node = node.as_deref_mut().unwrap();
             if as_top_node(node as *mut NodeHeader).jump_table_present() {
                 let char_to_check =
-                    if root_container_subchar_set > 0 {
-                        root_container_subchar as u8
+                    if root_container_subchar_set {
+                        root_container_subchar
                     }
                     else {
                         container_traversal_context.second_char
@@ -176,8 +176,6 @@ impl Container {
                     return (*jt_entry_tmp).key();
                 }
             }
-            jt_entry_tmp = unsafe { jt_entry.add(i as usize) };
-
         }
         *offset = self.get_container_head_size() + self.get_jump_table_size();
         0

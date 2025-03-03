@@ -46,6 +46,7 @@ impl OperationCommand {
 }
 
 #[repr(C, packed)]
+#[derive(Copy, Clone)]
 pub struct TraversalContext {
     pub offset: i32,
     pub hyperion_pointer: HyperionPointer,
@@ -152,6 +153,19 @@ pub struct EmbeddedTraversalContext {
     pub root_container_pointer: Box<HyperionPointer>,
 }
 
+impl Default for EmbeddedTraversalContext {
+    fn default() -> Self {
+        EmbeddedTraversalContext {
+            root_container: Box::default(),
+            next_embedded_container: None,
+            embedded_stack: None,
+            next_embedded_container_offset: 0,
+            embedded_container_depth: 0,
+            root_container_pointer: Box::default()
+        }
+    }
+}
+
 impl EmbeddedTraversalContext {
     pub fn root_container(&mut self) -> &mut Container {
         self.root_container.as_mut()
@@ -179,6 +193,17 @@ pub struct JumpContext {
     pub top_node_key: i32,
 }
 
+impl Default for JumpContext {
+    fn default() -> Self {
+        JumpContext {
+            predecessor: None,
+            top_node_predecessor_offset_absolute: 0,
+            sub_nodes_seen: 0,
+            top_node_key: 0
+        }
+    }
+}
+
 impl JumpContext {
     pub fn flush(&mut self) {
         self.predecessor = None;
@@ -198,8 +223,8 @@ impl JumpContext {
 }
 
 pub struct RangeQueryContext {
-    pub key_begin: AtomicChar,
-    pub current_key: Atomicu8,
+    pub key_begin: Box<u8>,
+    pub current_key: Box<u8>,
     pub arena: Box<Arena>,
     pub current_stack_depth: u16,
     pub current_key_offset: u16,

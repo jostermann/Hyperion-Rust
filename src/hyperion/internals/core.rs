@@ -1,31 +1,33 @@
-use crate::hyperion::components::container::{get_container_head_size, Container, EmbeddedContainer};
+use crate::hyperion::components::container::{get_container_head_size, shift_container, Container, EmbeddedContainer, RootContainerEntry, CONTAINER_MAX_EMBEDDED_DEPTH};
 use crate::hyperion::components::operation_context::ContainerValidTypes::ContainerValid;
 use crate::hyperion::components::operation_context::JumpStates::{JumpPoint1, JumpPoint2, NoJump};
-use crate::hyperion::components::context::{ContainerTraversalContext, ContainerTraversalHeader, EmbeddedTraversalContext, OperationCommand, TraversalType};
+use crate::hyperion::components::context::{ContainerTraversalContext, ContainerTraversalHeader, EmbeddedTraversalContext, JumpContext, OperationCommand, RangeQueryContext, TraversalContext, TraversalType};
 use crate::hyperion::components::operation_context::OperationContextHeader;
 use crate::hyperion::components::jump_table::TOPLEVEL_NODE_JUMP_HWM;
-use crate::hyperion::components::node::NodeType::Invalid;
-use crate::hyperion::components::node::{get_sub_node_key, get_top_node_key, Node};
-use crate::hyperion::components::node_header::{as_sub_node, as_top_node, as_top_node_mut, compare_path_compressed_node, delete_node, get_child_container_nomod, get_jump_value, get_node_value, get_offset_jump, get_offset_sub_node, get_offset_top_node, get_successor, use_sub_node_jump_table, NodeHeader};
+use crate::hyperion::components::node::NodeType::{Invalid, LeafNodeWithValue};
+use crate::hyperion::components::node::{get_sub_node_key, get_top_node_key, Node, NodeValue};
+use crate::hyperion::components::node_header::{as_sub_node, as_sub_node_mut, as_top_node, as_top_node_mut, compare_path_compressed_node, delete_node, get_child_container_nomod, get_jump_value, get_node_value, get_offset_child_container, get_offset_jump, get_offset_sub_node, get_offset_top_node, get_successor, use_sub_node_jump_table, NodeHeader};
 use crate::hyperion::components::return_codes::ReturnCode;
-use crate::hyperion::components::return_codes::ReturnCode::{GetFailureNoNode, OK};
+use crate::hyperion::components::return_codes::ReturnCode::{GetFailureNoNode, UnknownOperation, OK};
 use crate::hyperion::components::sub_node::ChildLinkType;
 use crate::hyperion::components::sub_node::ChildLinkType::PathCompressed;
 use crate::hyperion::components::top_node::TopNode;
-use crate::hyperion::internals::atomic_pointer::{AtomicPointer, Atomicu8, CONTAINER_SIZE_TYPE_0};
+use crate::hyperion::internals::atomic_pointer::{AtomicChar, AtomicPointer, Atomicu8, CONTAINER_SIZE_TYPE_0};
 use crate::hyperion::preprocessor::key_preprocessor::KeyProcessingIDs;
-use crate::memorymanager::api::{free, get_chained_pointer, get_pointer, is_chained_pointer, malloc, malloc_chained, register_chained_memory, Arena, HyperionPointer, CONTAINER_MAX_SPLITS, CONTAINER_SPLIT_BITS};
+use crate::memorymanager::api::{free, get_chained_pointer, get_pointer, is_chained_pointer, malloc, malloc_chained, reallocate, register_chained_memory, Arena, HyperionPointer, CONTAINER_MAX_SPLITS, CONTAINER_SPLIT_BITS};
 use bitfield_struct::bitfield;
-use libc::{calloc, size_t};
+use libc::{calloc, malloc_info, memcmp, size_t, tm};
 use std::cmp::Ordering;
 use std::ffi::c_void;
+use std::mem::needs_drop;
 use std::ptr::{copy, copy_nonoverlapping, null, null_mut, write_bytes, NonNull};
 use std::sync::Mutex;
+use crate::hyperion::components::context::OperationCommand::Put;
 use crate::hyperion::components::operation_context::{insert_jump, insert_top_level_jumptable, new_expand, scan_put, scan_put_embedded, scan_put_single, ContainerValidTypes, OperationContext};
 
 pub const CONTAINER_SPLIT_THRESHOLD_A: usize = 12288;
 pub const CONTAINER_SPLIT_THRESHOLD_B: usize = 65536;
-pub type HyperionCallback<T> = fn(key: &mut Atomicu8, key_len: u16, value: &mut AtomicPointer<T>) -> bool;
+pub type HyperionCallback = fn(key: &mut u8, key_len: u16, value: *mut c_void) -> bool;
 
 #[bitfield(u64, order = Msb)]
 pub struct GlobalConfigurationHeader {
@@ -53,7 +55,7 @@ pub struct GlobalConfiguration {
     pub num_reads_million: i64
 }
 
-pub static mut GLOBAL_CONFIG: Mutex<GlobalConfiguration> = Mutex::new(GlobalConfiguration {
+pub static GLOBAL_CONFIG: Lazy<RwLock<GlobalConfiguration>> = Lazy::new(|| RwLock::new(GlobalConfiguration {
     header: GlobalConfigurationHeader::new()
         .with_initialized(0)
         .with_thread_keep_alive(0)
@@ -65,10 +67,14 @@ pub static mut GLOBAL_CONFIG: Mutex<GlobalConfiguration> = Mutex::new(GlobalConf
     container_embedding_limit: 0,
     num_writes_million: 0,
     num_reads_million: 0
-});
+}));
+
+pub fn get_global_cfg() -> *mut GlobalConfiguration {
+    GLOBAL_CONFIG.as_mut_ptr()
+}
 
 pub fn initialize_ejected_container(arena: &mut Arena, required_size: u32) -> HyperionPointer {
-    let container_size_increment = unsafe { GLOBAL_CONFIG.lock().unwrap().header.container_size_increment() };
+    let container_size_increment = GLOBAL_CONFIG.read().header.container_size_increment();
     let null_ptr: *const c_void = null();
     let target_size: usize = (((required_size as usize - CONTAINER_SIZE_TYPE_0 + size_of_val(&null_ptr)) / container_size_increment as usize) + 1) * container_size_increment as usize + CONTAINER_SIZE_TYPE_0;
     let mut pointer: HyperionPointer = malloc(arena, target_size);
@@ -643,7 +649,7 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
                         }
                     }
 
-                    if ocx.jump_context.as_mut().unwrap().sub_nodes_seen > unsafe { GLOBAL_CONFIG.lock().unwrap().top_level_successor_threshold as i32 } {
+                    if ocx.jump_context.as_mut().unwrap().sub_nodes_seen > (GLOBAL_CONFIG.read().top_level_successor_threshold as i32) {
                         ocx.jump_table_sub_context.as_mut().unwrap().top_node = None;
                         node_head = new_expand(ocx, ctx, size_of::<u16>() as u32);
                         assert_eq!(as_top_node(node_head).container_type(), 0);
@@ -783,7 +789,7 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
                     assert_eq!(return_code, OK);
 
                     if (ocx.get_root_container().size() as usize) <= 2 * CONTAINER_SIZE_TYPE_0 && ocx.header.next_container_valid() == ContainerValid {
-                        if ocx.container_injection_context.as_mut().unwrap().root_container.is_some() && ((ocx.get_root_container().size() as i32 + ocx.container_injection_context.as_mut().unwrap().root_container.as_mut().unwrap().size() as i32) < unsafe { GLOBAL_CONFIG.lock().unwrap().container_embedding_limit as i32 }) {
+                        if ocx.container_injection_context.as_mut().unwrap().root_container.is_some() && ((ocx.get_root_container().size() as i32 + ocx.container_injection_context.as_mut().unwrap().root_container.as_mut().unwrap().size() as i32) < (GLOBAL_CONFIG.read().container_embedding_limit as i32)) {
                             inject_container(ocx);
                             ocx.container_injection_context.as_mut().unwrap().root_container = None;
                             ocx.container_injection_context.as_mut().unwrap().container_pointer = None;
@@ -863,6 +869,402 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
     OK
 }
 
-pub fn inject_container(ocx: &mut OperationContext) -> ReturnCode {
+pub fn inject_container(ocx: &mut OperationContext) {
+    let mut ctx = ContainerTraversalContext {
+        header: ContainerTraversalHeader::default(),
+        last_top_char_seen: 0,
+        last_sub_char_seen: 0,
+        current_container_offset: 0,
+        safe_offset: 0,
+        first_char: 0,
+        second_char: 0,
+    };
+
+    let mut embedded_stack: [Option<*mut EmbeddedContainer>; CONTAINER_MAX_EMBEDDED_DEPTH] = [None; CONTAINER_MAX_EMBEDDED_DEPTH];
+    let mut econ_end_stack: [i32; CONTAINER_MAX_EMBEDDED_DEPTH] = [0; CONTAINER_MAX_EMBEDDED_DEPTH];
+    let mut emb_stack_counter = 0;
+
+    let mut target_ptr;
+    let mut toplevel_offset = 0;
+
+    ctx.current_container_offset = ocx.get_root_container().get_container_head_size() + ocx.get_injection_context().root_container.as_mut().unwrap().get_jump_table_size();
+
+    let mut node_head = unsafe {
+        (ocx.get_root_container_pointer() as *mut c_void).add(ctx.current_container_offset as usize) as *mut NodeHeader
+    };
+
+    let mut offset_of_next_cotainer_ptr = if ocx.header.next_container_valid() != ContainerValidTypes::Invalid {
+        unsafe { (ocx.next_container_pointer.as_mut().unwrap().as_mut() as *mut HyperionPointer as *mut c_void).offset_from(ocx.get_root_container_pointer() as *mut c_void) }
+    }
+    else {
+        0
+    };
+
+    let mut top_node_succ_jump = null_mut();
+    let mut ctx_emb = ContainerTraversalContext {
+        header: ContainerTraversalHeader::default(),
+        last_top_char_seen: 0,
+        last_sub_char_seen: 0,
+        current_container_offset: 0,
+        safe_offset: 0,
+        first_char: 0,
+        second_char: 0,
+    };
+
+    let offset_head = ocx.get_root_container().get_container_head_size() + ocx.get_root_container().get_jump_table_size();
+    let size_injection = ocx.get_root_container().size() as i32 + (ocx.get_root_container().free_bytes() as i32 + offset_head);
+
+    let cache = unsafe { libc::malloc(size_injection as size_t) };
+    let mut tmp_cache = cache;
+    ctx_emb.current_container_offset += offset_head;
+    let mut tmp_offset = ctx_emb.current_container_offset;
+
+    let mut embed_node;
+
+    let mut to_copy = unsafe { (ocx.get_root_container_pointer() as *mut c_void).add(ctx_emb.current_container_offset as usize) as *mut NodeHeader };
+    let mut diff = 0;
+    let mut copied = 0;
+
+    while ctx_emb.current_container_offset < (ocx.get_root_container().size() as i32) {
+        embed_node = unsafe { (ocx.get_root_container_pointer() as *mut c_void).add(ctx_emb.current_container_offset as usize) as *mut NodeHeader };
+
+        if as_top_node(embed_node).type_flag() == Invalid {
+            break;
+        }
+
+        if as_sub_node(embed_node).container_type() == 0 {
+            assert!(!as_top_node(embed_node).jump_table_present());
+            if as_top_node(embed_node).jump_successor_present() {
+                diff = ctx_emb.current_container_offset - tmp_offset;
+                unsafe { copy_nonoverlapping(to_copy as *mut u8, tmp_cache as *mut u8, diff as usize); }
+                copied += diff;
+                tmp_offset = ctx_emb.current_container_offset;
+                unsafe { to_copy = to_copy.add(diff as usize) };
+                // copied previous nodes
+                // now copy node with jump data
+                diff = get_offset_jump(embed_node) as i32;
+                unsafe { copy_nonoverlapping(to_copy as *mut u8, tmp_cache as *mut u8, diff as usize); }
+                copied += diff;
+                top_node_succ_jump = tmp_cache as *mut NodeHeader;
+                as_top_node_mut(top_node_succ_jump).set_jump_successor_present(false);
+                unsafe { tmp_cache = tmp_cache.add(diff as usize); }
+                diff += size_of::<u16>() as i32;
+                tmp_offset += diff;
+                unsafe { to_copy = to_copy.add(diff as usize); }
+
+                if ctx_emb.current_container_offset < (offset_of_next_cotainer_ptr as i32) {
+                    offset_of_next_cotainer_ptr -= size_of::<u16>() as isize;
+                }
+
+                if as_top_node(top_node_succ_jump).type_flag() == LeafNodeWithValue {
+                    diff = size_of::<NodeValue>() as i32;
+                    unsafe { copy_nonoverlapping(to_copy as *mut u8, tmp_cache as *mut u8, diff as usize); }
+                    copied += diff;
+                    unsafe { tmp_cache = tmp_cache.add(diff as usize); }
+                    tmp_offset += diff;
+                    unsafe { to_copy = to_copy.add(diff as usize); }
+                }
+            }
+            ctx_emb.current_container_offset += get_offset_sub_node(embed_node) as i32;
+        }
+        else {
+            ctx_emb.current_container_offset += get_offset_sub_node(embed_node) as i32;
+        }
+    }
+
+    diff = ctx_emb.current_container_offset - tmp_offset;
+    unsafe { copy_nonoverlapping(to_copy as *mut u8, tmp_cache as *mut u8, diff as usize); }
+    copied += diff;
+    unsafe { tmp_cache = tmp_cache.add(diff as usize); }
+    unsafe { to_copy = to_copy.add(diff as usize); }
+    let total_injection_size = copied + size_of::<EmbeddedContainer>() as i32;
+    let mut jump_point = NoJump;
+
+    'outer_loop: while (ocx.get_injection_context().root_container.as_mut().unwrap().size() as i32) > ctx.current_container_offset {
+        match jump_point {
+            NoJump => {
+                node_head = unsafe { ocx.get_injection_root_container_pointer().add(ctx.current_container_offset as usize) as *mut NodeHeader };
+
+                if as_top_node(node_head).type_flag() == Invalid {
+                    break;
+                }
+
+                if as_top_node(node_head).container_type() == 0 {
+                    // TOP-Node
+                    if as_top_node(node_head).jump_successor_present() {
+                        toplevel_offset = ctx.current_container_offset;
+                    }
+                    else {
+                        toplevel_offset = 0;
+                    }
+                    assert!(!as_top_node(node_head).jump_table_present());
+                    ctx.current_container_offset += get_offset_top_node(node_head) as i32;
+                }
+                else {
+                    // SUB-Node
+                    match as_sub_node(node_head).child_container() {
+                        ChildLinkType::Link => {
+                            target_ptr = unsafe {
+                                (node_head as *mut c_void).add(get_offset_child_container(node_head)) as *mut HyperionPointer
+                            };
+
+                            if unsafe { memcmp(target_ptr as *mut c_void, ocx.embedded_traversal_context.as_mut().unwrap().root_container_pointer.as_mut() as *mut HyperionPointer as *mut c_void, size_of::<HyperionPointer>() as size_t) == 0 } {
+                                return perform_container_injection(ocx, &mut ctx, total_injection_size, target_ptr, cache, copied, (offset_of_next_cotainer_ptr as i32) - offset_head, toplevel_offset, top_node_succ_jump);
+                            }
+                        }
+                        ChildLinkType::PathCompressed => {
+                            let offset_child_container = get_offset_child_container(node_head);
+                            let mut p_e_stack = unsafe { (node_head as *mut c_void).add(offset_child_container) as *mut EmbeddedContainer };
+                            embedded_stack[0] = Some(p_e_stack);
+                            econ_end_stack[0] = unsafe { (*p_e_stack).size() as i32 } + ctx.current_container_offset + offset_child_container as i32;
+                            emb_stack_counter = 0;
+
+                            let mut tmp_node;
+                            ctx.current_container_offset += (offset_child_container + size_of::<EmbeddedContainer>()) as i32;
+
+                            while (ocx.get_injection_context().root_container.as_mut().unwrap().size() as i32) > ctx.current_container_offset {
+                                if emb_stack_counter > 0 {
+                                    while econ_end_stack[emb_stack_counter - 1] == ctx.current_container_offset {
+                                        emb_stack_counter -= 1;
+                                        if emb_stack_counter == 0 {
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if emb_stack_counter == 0 {
+                                    jump_point = NoJump;
+                                    continue 'outer_loop;
+                                }
+
+                                tmp_node = unsafe {
+                                    (ocx.get_injection_root_container_pointer() as *mut c_void).add(ctx.current_container_offset as usize) as *mut NodeHeader
+                                };
+                                assert_ne!(as_top_node(tmp_node).type_flag(), Invalid);
+
+                                if as_top_node(tmp_node).container_type() == 0 {
+                                    ctx.current_container_offset += get_offset_top_node(tmp_node) as i32;
+                                }
+                                else {
+                                    match as_sub_node(tmp_node).child_container() {
+                                        ChildLinkType::EmbeddedContainer => {
+                                            let emb_offset = get_offset_child_container(tmp_node);
+                                            p_e_stack = unsafe { (tmp_node as *mut c_void).add(emb_offset) as *mut EmbeddedContainer };
+                                            ctx.current_container_offset += emb_offset as i32;
+                                            embedded_stack[emb_stack_counter] = Some(p_e_stack);
+                                            econ_end_stack[emb_stack_counter] = unsafe { (*p_e_stack).size() as i32 } + ctx.current_container_offset;
+                                            emb_stack_counter += 1;
+                                            ctx.current_container_offset += size_of::<EmbeddedContainer>() as i32;
+                                            continue 'outer_loop;
+                                        }
+                                        ChildLinkType::Link => {
+                                            target_ptr = unsafe {
+                                                (tmp_node as *mut c_void).add(get_offset_child_container(tmp_node)) as *mut HyperionPointer
+                                            };
+
+                                            if unsafe { memcmp(target_ptr as *mut c_void, ocx.embedded_traversal_context.as_mut().unwrap().root_container_pointer.as_mut() as *mut HyperionPointer as *mut c_void, size_of::<HyperionPointer>() as size_t) == 0 } {
+                                                return perform_container_injection(ocx, &mut ctx, total_injection_size, target_ptr, cache, copied, (offset_of_next_cotainer_ptr as i32) - offset_head, toplevel_offset, top_node_succ_jump);
+                                            }
+                                        }
+                                        _ => {
+                                            ctx.current_container_offset += get_offset_sub_node(node_head) as i32;
+                                        }
+                                    }
+                                }
+                            }
+                            jump_point = JumpPoint1;
+                            continue;
+                        }
+                        _ => {
+                            ctx.current_container_offset += get_offset_sub_node(node_head) as i32;
+                        }
+                    }
+                }
+            }
+            JumpPoint1 => unsafe {
+                jump_point = NoJump;
+                libc::free(cache);
+            }
+            _ => { return; }
+        }
+    }
+}
+
+pub fn perform_container_injection(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, total_injection_size: i32, mut target_ptr: *mut HyperionPointer, cache: *mut c_void, copied: i32, next_container_fix: i32, toplevel_offset: i32, mut topnode_succ_jump: *mut NodeHeader) {
+    let mut node_head = unsafe {
+        (ocx.get_injection_root_container_pointer() as *mut c_void).add(ctx.current_container_offset as usize) as *mut NodeHeader
+    };
+
+    let mut safe_to_free: HyperionPointer = ocx.embedded_traversal_context.as_mut().unwrap().root_container_pointer.as_mut().clone();
+    let base_container_delta = total_injection_size - size_of::<HyperionPointer>() as i32;
+
+    if base_container_delta > (ocx.get_injection_context().root_container.as_mut().unwrap().free_bytes() as i32) {
+        ocx.flush_jump_context();
+        ocx.flush_jump_table_sub_context();
+        assert!(ocx.path_compressed_ejection_context.is_none());
+
+        let old_free = ocx.get_injection_context().root_container.as_mut().unwrap().free_bytes() as i32;
+        let mut new_size = (((ocx.get_injection_context().root_container.as_mut().unwrap().free_bytes() as i32) + base_container_delta - old_free) / CONTAINER_SIZE_TYPE_0 as i32) * CONTAINER_SIZE_TYPE_0 as i32;
+
+        if new_size <= ((ocx.get_injection_context().root_container.as_mut().unwrap().free_bytes() as i32) + base_container_delta - old_free) {
+            new_size += CONTAINER_SIZE_TYPE_0 as i32;
+        }
+
+        let delta = new_size - ocx.get_injection_context().root_container.as_mut().unwrap().size() as i32;
+        let mut injection_ctx = ocx.container_injection_context.take().unwrap();
+        injection_ctx.container_pointer = Some(Box::new(
+            reallocate(ocx.arena.as_mut().unwrap().as_mut(), &mut injection_ctx.container_pointer.as_mut().unwrap().as_mut(), new_size as usize, ocx.chained_pointer_hook)
+        ));
+        unsafe {
+           injection_ctx.root_container = Some(Box::from_raw(
+               get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut injection_ctx.container_pointer.as_mut().unwrap().as_mut(), 1, ocx.chained_pointer_hook) as *mut Container
+           ));
+        }
+        ocx.container_injection_context = Some(injection_ctx);
+        node_head = unsafe { (ocx.get_injection_root_container_pointer() as *mut c_void).add(ctx.current_container_offset as usize) as *mut NodeHeader };
+        assert!(as_top_node(node_head).jump_successor_present());
+        assert_ne!(as_top_node(node_head).type_flag(), Invalid);
+        target_ptr = unsafe {
+            (node_head as *mut c_void).add(get_offset_child_container(node_head)) as *mut HyperionPointer
+        };
+        ocx.get_injection_context().root_container.as_mut().unwrap().set_size(new_size as u32);
+        ocx.get_injection_context().root_container.as_mut().unwrap().set_free_bytes((delta + old_free) as u8);
+        ocx.get_injection_context().root_container.as_mut().unwrap().set_split_delay(0);
+    }
+
+    let shift_start = unsafe {
+        (target_ptr as *mut c_void).add(size_of::<HyperionPointer>())
+    };
+    let offset = unsafe { shift_start.offset_from(ocx.get_injection_root_container_pointer() as *mut c_void) };
+    let tail = ocx.get_injection_context().root_container.as_mut().unwrap().size() as i32 - offset as i32 + ocx.get_injection_context().root_container.as_mut().unwrap().free_bytes() as i32;
+    unsafe { shift_container(shift_start, base_container_delta as usize, tail as usize); }
+
+    let target = target_ptr as *mut EmbeddedContainer;
+    unsafe {
+        (*target).set_size(total_injection_size as u8);
+        copy_nonoverlapping(cache as *mut u8, (target as *mut c_void).add(size_of::<EmbeddedContainer>()) as *mut u8, copied as usize);
+    }
+    let size_left = ocx.get_injection_context().root_container.as_mut().unwrap().size() - base_container_delta as u32;
+    ocx.get_root_container().set_free_size_left(size_left);
+
+    as_sub_node_mut(node_head).set_child_container(ChildLinkType::EmbeddedContainer);
+
+    ocx.next_container_pointer = unsafe {
+        Some(Box::from_raw((target as *mut c_void).add(size_of::<EmbeddedContainer>() + next_container_fix as usize) as *mut HyperionPointer))
+    };
+    free(ocx.arena.as_mut().unwrap().as_mut(), &mut safe_to_free);
+
+    if toplevel_offset != 0 {
+        topnode_succ_jump = unsafe {
+            (ocx.get_injection_root_container_pointer() as *mut c_void).add(toplevel_offset as usize) as *mut NodeHeader
+        };
+        let jump_val = unsafe {
+            (topnode_succ_jump as *mut c_void).add(get_offset_jump(topnode_succ_jump)) as *mut u16
+        };
+        unsafe { *jump_val += base_container_delta as u16; }
+    }
+
+    if ocx.get_injection_context().root_container.as_mut().unwrap().jump_table() > 0 {
+        let mut injection_ctx = ocx.container_injection_context.take().unwrap();
+        ocx.embedded_traversal_context.as_mut().unwrap().root_container = Box::new(injection_ctx.root_container.as_mut().unwrap().as_mut().clone());
+        ocx.embedded_traversal_context.as_mut().unwrap().root_container_pointer = Box::new(injection_ctx.container_pointer.as_mut().unwrap().as_mut().clone());
+        ocx.container_injection_context = Some(injection_ctx);
+        insert_top_level_jumptable(ocx, ctx);
+    }
+    unsafe { libc::free(cache); }
+}
+
+struct TrieStats {
+    pub num_internal_nodes: i64,
+    pub num_embedded_container: i64,
+    pub num_delta_encoded: i64,
+    pub path_compressed: [i64; 128],
+    pub delta_enc: [i64; 256],
+    pub top_jumps: [i64; 8],
+    pub cont_splitting_increment: [i64; 4],
+    pub sub_successor: i64,
+    pub sub_jumptable: i64
+}
+
+use once_cell::sync::Lazy;
+use spin::RwLock;
+
+static TRIESTATS: Lazy<RwLock<TrieStats>> = Lazy::new(|| RwLock::new(TrieStats {
+    num_internal_nodes: 0,
+    num_embedded_container: 0,
+    num_delta_encoded: 0,
+    path_compressed: [0; 128],
+    delta_enc: [0; 256],
+    top_jumps: [0; 8],
+    cont_splitting_increment: [0; 4],
+    sub_successor: 0,
+    sub_jumptable: 0,
+}));
+
+pub fn get_trie_stats() -> *mut TrieStats {
+    TRIESTATS.as_mut_ptr()
+}
+
+pub fn stats_container(container: *mut Container) {
+    #[cfg(feature = "triestats")] {
+        unsafe {
+            TRIESTATS.write().top_jumps[(*container).jump_table() as usize] += 1;
+            TRIESTATS.write().cont_splitting_increment[(*container).split_delay() as usize] += 1;
+        }
+    }
+}
+
+pub fn initialize_operation_context(ocx: &mut OperationContext, operation_command: OperationCommand, root_container_entry: &mut RootContainerEntry, key: &mut u8, key_len: u16) {
+    ocx.header.set_command(operation_command);
+    ocx.header.set_next_container_valid(ContainerValid);
+    ocx.root_container_entry = unsafe { Some(Box::from_raw(root_container_entry as *mut RootContainerEntry)) };
+    ocx.arena = unsafe { Some(Box::from_raw(root_container_entry.inner.lock().arena.as_mut().unwrap().as_mut() as *mut Arena)) };
+    ocx.next_container_pointer = unsafe { Some(Box::from_raw(&mut root_container_entry.inner.lock().hyperion_pointer.unwrap() as *mut HyperionPointer)) };
+    ocx.key = Some(AtomicChar::new_from_pointer(key as *mut u8));
+    ocx.key_len_left = key_len as i32;
+}
+
+pub fn put_debug(arena: &mut Arena, container_pointer: &mut HyperionPointer, key: &mut u8, key_len: u32, node_value: Option<Box<NodeValue>>) -> ReturnCode {
+    let mut operation_context: OperationContext = OperationContext {
+        header: OperationContextHeader::default(),
+        chained_pointer_hook: 0,
+        key_len_left: key_len as i32,
+        key: Some(AtomicChar::new_from_pointer(key as *mut u8)),
+        jump_context: Some(JumpContext::default()),
+        root_container_entry: None,
+        embedded_traversal_context: Some(EmbeddedTraversalContext::default()),
+        jump_table_sub_context: None,
+        next_container_pointer: unsafe { Some(Box::from_raw(container_pointer as *mut HyperionPointer)) },
+        arena: unsafe { Some(Box::from_raw(arena as *mut Arena)) },
+        path_compressed_ejection_context: None,
+        return_value: None,
+        input_value: node_value,
+        container_injection_context: None,
+    };
+    operation_context.header.set_command(Put);
+    operation_context.header.set_next_container_valid(ContainerValid);
+    traverse_tree(&mut operation_context)
+}
+
+pub fn range(root_container_entry: &mut RootContainerEntry, key: &mut u8, key_len: u16, hyperion_callback: HyperionCallback) -> ReturnCode {
+    let tmp_key: [u8; 4096] = [0; 4096];
+    let mut rqc: RangeQueryContext = RangeQueryContext {
+        key_begin: unsafe { Box::from_raw(key as *mut u8) },
+        current_key: Box::new(tmp_key[0]),
+        arena: unsafe { Box::from_raw(root_container_entry.inner.lock().arena.as_mut().unwrap().as_mut() as *mut Arena) },
+        current_stack_depth: 0,
+        current_key_offset: 0,
+        key_len,
+        do_report: 0,
+        stack: [None; 128],
+    };
+    rqc.stack[0] = Some(TraversalContext {
+        offset: 0,
+        hyperion_pointer: root_container_entry.inner.lock().hyperion_pointer.unwrap()
+    });
+
     todo!()
 }
+
+
+

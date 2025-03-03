@@ -10,7 +10,7 @@ use crate::hyperion::components::node_header::{as_top_node, get_offset_jump_tabl
 use crate::hyperion::components::operation_context::OperationContext;
 use crate::hyperion::internals::atomic_pointer::{AtomicArena, CONTAINER_SIZE_TYPE_0};
 use crate::hyperion::internals::core::GLOBAL_CONFIG;
-use crate::memorymanager::api::HyperionPointer;
+use crate::memorymanager::api::{Arena, HyperionPointer};
 
 pub const CONTAINER_MAX_EMBEDDED_DEPTH: usize = 28;
 pub const CONTAINER_MAX_FREESIZE: usize = CONTAINER_SIZE_TYPE_0;
@@ -62,7 +62,7 @@ impl Container {
     }
 
     pub fn increment_container_size(&mut self, required_minimum: i32) -> u32 {
-        let container_increment: u8 = unsafe { GLOBAL_CONFIG.lock().unwrap().header.container_size_increment() };
+        let container_increment: u8 = GLOBAL_CONFIG.read().header.container_size_increment();
         let mut factor: i32 = required_minimum / container_increment as i32;
         if required_minimum % container_increment as i32 != 0 {
             factor += 1;
@@ -205,21 +205,27 @@ pub struct ContainerLink {
     pub ptr: HyperionPointer
 }
 
+pub const ROOT_NODES: usize = 1;
+
 pub struct RootContainerStats {
     pub puts: i32,
     pub gets: i32,
     pub updates: i32,
     pub range_queries: i32,
-    pub write_lock: pthread_spinlock_t
+}
+
+pub struct RootContainerEntryInner {
+    pub stats: RootContainerStats,
+    pub arena: Option<Box<Arena>>,
+    pub hyperion_pointer: Option<HyperionPointer> // TODO KEY_PPP
 }
 
 pub struct RootContainerEntry {
-    pub spinlock: pthread_spinlock_t,
-    pub stats: RootContainerStats,
-    pub arena: AtomicArena,
-    pub hyperion_pointer: HyperionPointer // TODO KEY_PPP
+    pub inner: spin::Mutex<RootContainerEntryInner>
 }
 
-pub struct RootContainer {
-    pub root_container_entry: RootContainerEntry
+pub struct RootContainerArray {
+    pub root_container_entries: [Option<RootContainerEntry>; ROOT_NODES]
 }
+
+

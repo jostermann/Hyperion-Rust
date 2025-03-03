@@ -20,7 +20,7 @@ use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 use bitfield_struct::bitfield;
 use libc::{memcmp, memmove, size_t};
 use std::ffi::c_void;
-use std::ptr::{copy, copy_nonoverlapping, write_bytes, NonNull};
+use std::ptr::{copy, copy_nonoverlapping, null_mut, write_bytes, NonNull};
 use crate::hyperion::components::operation_context::{meta_expand, new_expand, new_expand_embedded, safe_sub_node_jump_table_context, ContainerValidTypes, OperationContext};
 
 #[repr(C)]
@@ -272,30 +272,30 @@ pub fn register_jump_context(node_head: *mut NodeHeader, ctx: &mut ContainerTrav
     }
 }
 
-pub fn call_top_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext, hyperion_callback: HyperionCallback<NodeValue>) -> bool {
+pub fn call_top_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext, hyperion_callback: HyperionCallback) -> bool {
     match as_top_node(node_head).type_flag() {
-        LeafNodeEmpty => hyperion_callback(&mut rqc.current_key, rqc.current_key_offset + 1, &mut AtomicNodeValue::new()),
+        LeafNodeEmpty => hyperion_callback(rqc.current_key.as_mut(), rqc.current_key_offset + 1, null_mut()),
         LeafNodeWithValue => unsafe {
             hyperion_callback(
-                &mut rqc.current_key,
+                rqc.current_key.as_mut(),
                 rqc.current_key_offset + 1,
-                &mut AtomicNodeValue::new_from_pointer(node_head.add(get_offset_node_value(node_head)) as *mut NodeValue),
+                node_head.add(get_offset_node_value(node_head)) as *mut c_void,
             )
         },
         Invalid | InnerNode => true,
     }
 }
 
-pub fn call_sub_node(node_head: *mut NodeHeader, range_query_context: &mut RangeQueryContext, hyperion_callback: HyperionCallback<NodeValue>) -> bool {
+pub fn call_sub_node(node_head: *mut NodeHeader, range_query_context: &mut RangeQueryContext, hyperion_callback: HyperionCallback) -> bool {
     match as_sub_node(node_head).type_flag() {
         LeafNodeEmpty => {
-            hyperion_callback(&mut range_query_context.current_key, range_query_context.current_key_offset + 2, &mut AtomicNodeValue::new())
+            hyperion_callback(range_query_context.current_key.as_mut(), range_query_context.current_key_offset + 2, null_mut())
         },
         LeafNodeWithValue => unsafe {
             hyperion_callback(
-                &mut range_query_context.current_key,
+                range_query_context.current_key.as_mut(),
                 range_query_context.current_key_offset + 2,
-                &mut AtomicNodeValue::new_from_pointer(node_head.add(get_offset_node_value(node_head)) as *mut NodeValue),
+                node_head.add(get_offset_node_value(node_head)) as *mut c_void
             )
         },
         Invalid | InnerNode => true,
@@ -473,7 +473,7 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
     if new_free_size_left > CONTAINER_MAX_FREESIZE as i32 {
         let used = ro_csize as i32 - (ro_free_size_left as i32 - delta);
         assert!(used > 0);
-        let container_increment = unsafe { GLOBAL_CONFIG.lock().unwrap().header.container_size_increment() as i32 };
+        let container_increment = GLOBAL_CONFIG.read().header.container_size_increment() as i32;
         let mut tgt: u32 = (used / container_increment) as u32;
         if (used % container_increment) != 0 {
             tgt += 1;
@@ -599,7 +599,7 @@ pub enum EmbedLinkCommands {
 pub fn embed_or_link_child(mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> *mut NodeHeader {
     let mut switch_condition = CreateLinkToContainer;
     let mut required_size_for_path_compression = size_of::<PathCompressedNodeHeader>() as i32 + ocx.key_len_left - 2;
-    let container_embedding_hwm = unsafe { GLOBAL_CONFIG.lock().unwrap().container_embedding_limit as i32 };
+    let container_embedding_hwm = GLOBAL_CONFIG.read().container_embedding_limit as i32;
     if ocx.input_value.is_some() {
         required_size_for_path_compression += size_of::<NodeValue>() as i32;
     }
@@ -726,7 +726,7 @@ pub fn get_child_container_pointer(
                     Some(AtomicEmbContainer::new_from_pointer(emb_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
                 emb_context.embedded_container_depth += 1;
 
-                let config = unsafe { GLOBAL_CONFIG.lock().unwrap() };
+                let config = GLOBAL_CONFIG.read();
                 if ocx.header.command() == Put
                     && (emb_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32
                         > config.header.container_embedding_high_watermark()
@@ -1113,8 +1113,8 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
     let child_container_offset = get_offset_child_container(node_head);
     let pc_key_offset = size_of::<PathCompressedNodeHeader>() + ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize * size_of::<NodeValue>();
     let pc_key_len = ocx.get_pc_ejection_context().path_compressed_node_header.size() as usize - pc_key_offset;
-    let container_embedding_limit = unsafe { GLOBAL_CONFIG.lock().unwrap().container_embedding_limit };
-    let container_embedding_hwm = unsafe { GLOBAL_CONFIG.lock().unwrap().header.container_embedding_high_watermark() };
+    let container_embedding_limit =GLOBAL_CONFIG.read().container_embedding_limit;
+    let container_embedding_hwm = GLOBAL_CONFIG.read().header.container_embedding_high_watermark();
 
     if (ocx.get_root_container().size() >= container_embedding_limit)
         || (ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth >= CONTAINER_MAX_EMBEDDED_DEPTH as i32)

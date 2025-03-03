@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use crate::hyperion::components::container::{get_container_head_size, get_container_link_size, shift_container, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREESIZE};
+use crate::hyperion::components::container::{get_container_head_size, get_container_link_size, shift_container, update_space_usage, Container, ContainerLink, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREESIZE};
 use crate::hyperion::components::operation_context::ContainerValidTypes::{ContainerValid, EmbeddedContainerValid};
 use crate::hyperion::components::context::OperationCommand::Put;
 use crate::hyperion::components::context::{ContainerTraversalContext, ContainerTraversalHeader, EmbeddedTraversalContext, JumpContext, PathCompressedEjectionContext, RangeQueryContext, KEY_DELTA_STATES};
@@ -388,9 +388,7 @@ pub fn delete_node(node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: 
         copy(src as *const u8, dest as *mut u8, remaining_length as usize);
     }
     as_top_node_mut(node_head).set_type_flag(InnerNode);
-    let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-    emb_ctx.root_container.as_mut().update_space_usage(0 - size_deleted as i16, ocx, ctx);
-    ocx.embedded_traversal_context = Some(emb_ctx);
+    update_space_usage(0 - size_deleted as i16, ocx, ctx);
     OK
 }
 
@@ -401,13 +399,11 @@ pub fn update_path_compressed_node(mut node: *mut NodeHeader, ocx: &mut Operatio
 
         if pc_node.value_present() {
             node = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
-            let mut embedded_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-            let root_container: &mut Container = embedded_context.root_container.as_mut();
+            let root_container: &mut Container = ocx.embedded_traversal_context.root_container.as_mut();
             unsafe {
                 root_container.wrap_shift_container(value, size_of::<NodeValue>());
             }
-            root_container.update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
-            ocx.embedded_traversal_context = Some(embedded_context);
+            update_space_usage(size_of::<NodeValue>() as i16, ocx, ctx);
             pc_node = as_path_compressed_mut(node);
             value = unsafe { (pc_node as *mut PathCompressedNodeHeader as *mut c_void).add(size_of::<PathCompressedNodeHeader>()) };
         }
@@ -420,18 +416,17 @@ pub fn update_path_compressed_node(mut node: *mut NodeHeader, ocx: &mut Operatio
 }
 
 pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
-    assert!(ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth > 0);
+    assert!(ocx.embedded_traversal_context.embedded_container_depth > 0);
     node_head = meta_expand(ocx, ctx, get_container_link_size() as u32);
-    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-    let emb_container: &mut AtomicEmbContainer = emb_context.embedded_stack.as_mut().unwrap()[0].as_mut().unwrap();
+    let emb_container: &mut AtomicEmbContainer = ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[0].as_mut().unwrap();
 
     let child_offset: usize = get_offset_child_container(node_head);
     let embedded_container_offset: usize =
-        unsafe { emb_container.get_as_mut_memory().offset_from(emb_context.root_container.as_mut() as *mut Container as *mut c_void) as usize };
+        unsafe { emb_container.get_as_mut_memory().offset_from(ocx.embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void) as usize };
     let em_csize: u32 = unsafe { (*(emb_container.get())).size() as u32 };
-    let ro_csize: u32 = emb_context.root_container.as_mut().size();
+    let ro_csize: u32 = ocx.embedded_traversal_context.root_container.as_mut().size();
     assert!(ro_csize > em_csize);
-    let ro_free_size_left: u8 = emb_context.root_container.as_mut().free_bytes();
+    let ro_free_size_left: u8 = ocx.embedded_traversal_context.root_container.as_mut().free_bytes();
 
     let mut container_ptr: HyperionPointer = initialize_ejected_container(ocx.arena.as_mut().unwrap().as_mut(), em_csize);
     let p_new: *mut Container = get_pointer(ocx.arena.as_mut().unwrap(), &mut container_ptr, 1, ctx.first_char) as *mut Container;
@@ -449,7 +444,7 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
     }
 
     let size: i32 = ro_csize as i32 - (em_csize as i32 + embedded_container_offset as i32 + ro_free_size_left as i32);
-    emb_context.embedded_container_depth = 0;
+    ocx.embedded_traversal_context.embedded_container_depth = 0;
 
     if size > 0 {
         unsafe {
@@ -461,12 +456,12 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
     }
 
     let delta: i32 = -(em_csize as i32 - get_container_link_size() as i32);
-    let new_free_size_left: i32 = emb_context.root_container.as_mut().free_bytes() as i32 - delta;
-    emb_context.root_container.as_mut().update_space_usage(delta as i16, ocx, ctx);
+    let new_free_size_left: i32 = ocx.embedded_traversal_context.root_container.as_mut().free_bytes() as i32 - delta;
+    update_space_usage(delta as i16, ocx, ctx);
     assert!(ro_csize as i32 > new_free_size_left);
 
     unsafe {
-        let p_free = (emb_context.root_container.as_mut() as *mut Container as *mut c_void).add(ro_csize as usize - new_free_size_left as usize);
+        let p_free = (ocx.embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void).add(ro_csize as usize - new_free_size_left as usize);
         write_bytes(p_free as *mut u8, 0, new_free_size_left as usize);
     }
 
@@ -481,47 +476,42 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
         let tgt_size: u32 = tgt * container_increment as u32;
         let new_free_size: u32 = (ro_free_size_left as u32 - delta as u32) % container_increment as u32;
 
-        assert_eq!(emb_context.embedded_container_depth, 0);
-        emb_context.root_container_pointer =
-            Box::new(reallocate(ocx.arena.as_mut().unwrap().as_mut(), &mut emb_context.root_container_pointer, tgt_size as usize, ocx.chained_pointer_hook));
+        assert_eq!(ocx.embedded_traversal_context.embedded_container_depth, 0);
+        ocx.embedded_traversal_context.root_container_pointer =
+            Box::new(reallocate(ocx.arena.as_mut().unwrap().as_mut(), &mut ocx.embedded_traversal_context.root_container_pointer, tgt_size as usize, ocx.chained_pointer_hook));
         unsafe {
-            emb_context.root_container =
+            ocx.embedded_traversal_context.root_container =
                 Box::from_raw(
-                    get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut emb_context.root_container_pointer, 1, ocx.chained_pointer_hook)
+                    get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut ocx.embedded_traversal_context.root_container_pointer, 1, ocx.chained_pointer_hook)
                         as *mut Container,
                 );
         }
-        emb_context.root_container.set_free_size_left(new_free_size);
-        emb_context.root_container.as_mut().set_size(tgt_size);
+        ocx.embedded_traversal_context.root_container.set_free_size_left(new_free_size);
+        ocx.embedded_traversal_context.root_container.as_mut().set_size(tgt_size);
     }
-    ocx.embedded_traversal_context = Some(emb_context);
 }
 
 pub fn add_embedded_container(mut node: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
     ocx.header.set_next_container_valid(EmbeddedContainerValid);
     let offset_child_container: usize = get_offset_child_container(node);
     node = new_expand_embedded(ocx, ctx, size_of::<EmbeddedContainer>() as u32);
-    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
     unsafe {
         let base_ptr: *mut c_void = node as *mut c_void;
-        emb_context.next_embedded_container = Some(Box::from_raw(base_ptr.add(offset_child_container) as *mut EmbeddedContainer));
+        ocx.embedded_traversal_context.next_embedded_container = Some(Box::from_raw(base_ptr.add(offset_child_container) as *mut EmbeddedContainer));
 
-        emb_context.root_container.as_mut().wrap_shift_container(
-            emb_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer as *mut c_void,
+        ocx.embedded_traversal_context.root_container.as_mut().wrap_shift_container(
+            ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer as *mut c_void,
             size_of::<EmbeddedContainer>(),
         );
     }
     ctx.current_container_offset += offset_child_container as i32;
     as_sub_node_mut(node).set_child_container(ChildLinkType::EmbeddedContainer);
-    ocx.embedded_traversal_context = Some(emb_context);
     safe_sub_node_jump_table_context(ocx, ctx);
-    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-    emb_context.embedded_stack.as_mut().unwrap()[emb_context.embedded_container_depth as usize] =
-        Some(AtomicEmbContainer::new_from_pointer(emb_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
-    emb_context.embedded_container_depth += 1;
+    ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[ocx.embedded_traversal_context.embedded_container_depth as usize] =
+        Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
+    ocx.embedded_traversal_context.embedded_container_depth += 1;
     ocx.next_container_pointer = None;
-    emb_context.root_container.update_space_usage(size_of::<EmbeddedContainer>() as i16, ocx, ctx);
-    ocx.embedded_traversal_context = Some(emb_context);
+    update_space_usage(size_of::<EmbeddedContainer>() as i16, ocx, ctx);
 }
 
 pub fn create_node_embedded(
@@ -537,11 +527,10 @@ pub fn create_node_embedded(
     let required: usize = size_of::<NodeHeader>() + set_key_after_creation as usize + input_memory_consumption;
     node_head = new_expand_embedded(ocx, ctx, required as u32);
 
-    let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
     let amount: i32 = unsafe {
-        emb_context.root_container.as_mut().size() as i32
-            - (emb_context.root_container.as_mut().free_bytes() as i32
-                + ((node_head as *mut c_void).offset_from(emb_context.root_container.as_mut() as *mut Container as *mut c_void) as i32))
+        ocx.embedded_traversal_context.root_container.as_mut().size() as i32
+            - (ocx.embedded_traversal_context.root_container.as_mut().free_bytes() as i32
+                + ((node_head as *mut c_void).offset_from(ocx.embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void) as i32))
     };
 
     if amount > 0 {
@@ -557,8 +546,7 @@ pub fn create_node_embedded(
     });
     as_top_node_mut(node_head).set_container_type(container_depth);
 
-    emb_context.root_container.as_mut().update_space_usage(required as i16, ocx, ctx);
-    ocx.embedded_traversal_context = Some(emb_context);
+    update_space_usage(required as i16, ocx, ctx);
 
     if set_key_after_creation {
         set_nodes_key2(node_head as *mut Node, ocx, ctx, true, absolute_key);
@@ -608,19 +596,19 @@ pub fn embed_or_link_child(mut node_head: *mut NodeHeader, ocx: &mut OperationCo
     } else if ocx.get_root_container().size() as i32 + required_size_for_path_compression
         < container_embedding_hwm
     {
-        if ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth == 0 {
+        if ocx.embedded_traversal_context.embedded_container_depth == 0 {
             if required_size_for_path_compression < 128 {
                 switch_condition = CreatePathCompressedNode;
             } else {
                 switch_condition = CreateEmbeddedContainer;
             }
-        } else if ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth < CONTAINER_MAX_EMBEDDED_DEPTH as i32 {
-            if (ocx.embedded_traversal_context.as_mut().unwrap().embedded_stack.as_mut().unwrap()[0].as_mut().unwrap().borrow_mut().size() as i32) + required_size_for_path_compression
+        } else if ocx.embedded_traversal_context.embedded_container_depth < CONTAINER_MAX_EMBEDDED_DEPTH as i32 {
+            if (ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[0].as_mut().unwrap().borrow_mut().size() as i32) + required_size_for_path_compression
                 < container_embedding_hwm
                 && required_size_for_path_compression < 128
             {
                 switch_condition = CreatePathCompressedNode;
-            } else if (ocx.embedded_traversal_context.as_mut().unwrap().embedded_stack.as_mut().unwrap()[0].as_mut().unwrap().borrow_mut().size() as i32) < container_embedding_hwm {
+            } else if (ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[0].as_mut().unwrap().borrow_mut().size() as i32) < container_embedding_hwm {
                 switch_condition = CreateEmbeddedContainer;
             }
         }
@@ -657,8 +645,6 @@ pub fn embed_or_link_child(mut node_head: *mut NodeHeader, ocx: &mut OperationCo
             unsafe {
                 let target: *mut PathCompressedNodeHeader = (node_head as *mut c_void).add(offset) as *mut PathCompressedNodeHeader;
                 ocx.embedded_traversal_context
-                    .as_mut()
-                    .unwrap()
                     .root_container
                     .as_mut()
                     .wrap_shift_container(target as *mut c_void, required_size_for_path_compression as usize);
@@ -678,9 +664,7 @@ pub fn embed_or_link_child(mut node_head: *mut NodeHeader, ocx: &mut OperationCo
                 as_sub_node_mut(node_head).set_child_container(PathCompressed);
             }
 
-            let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-            emb_ctx.root_container.as_mut().update_space_usage(required_size_for_path_compression as i16, ocx, ctx);
-            ocx.embedded_traversal_context = Some(emb_ctx);
+            update_space_usage(required_size_for_path_compression as i16, ocx, ctx);
             ocx.header.set_next_container_valid(ContainerValidTypes::Invalid);
             ocx.header.set_operation_done(true);
             ocx.header.set_performed_put(true);
@@ -699,10 +683,8 @@ pub fn embed_or_link_child(mut node_head: *mut NodeHeader, ocx: &mut OperationCo
                 as_sub_node_mut(node_head).set_child_container(Link);
             }
             ocx.header.set_next_container_valid(ContainerValid);
-            let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-            emb_ctx.root_container.as_mut().update_space_usage(get_container_link_size() as i16, ocx, ctx);
-            emb_ctx.embedded_container_depth = 0;
-            ocx.embedded_traversal_context = Some(emb_ctx);
+            update_space_usage(get_container_link_size() as i16, ocx, ctx);
+            ocx.embedded_traversal_context.embedded_container_depth = 0;
         },
     }
     node_head
@@ -716,37 +698,34 @@ pub fn get_child_container_pointer(
             if as_sub_node(node_head).child_container() == ChildLinkType::EmbeddedContainer {
                 safe_sub_node_jump_table_context(ocx, ctx);
                 let offset: usize = get_offset_child_container(node_head);
-                let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
 
-                emb_context.next_embedded_container =
+                ocx.embedded_traversal_context.next_embedded_container =
                     unsafe { Some(Box::from_raw((node_head.as_mut().unwrap() as *mut NodeHeader as *mut c_void).add(offset) as *mut EmbeddedContainer)) };
 
-                assert!((emb_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32) < emb_context.root_container.as_mut().size());
-                emb_context.embedded_stack.as_mut().unwrap()[emb_context.embedded_container_depth as usize] =
-                    Some(AtomicEmbContainer::new_from_pointer(emb_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
-                emb_context.embedded_container_depth += 1;
+                assert!((ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32) < ocx.embedded_traversal_context.root_container.as_mut().size());
+                ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[ocx.embedded_traversal_context.embedded_container_depth as usize] =
+                    Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
+                ocx.embedded_traversal_context.embedded_container_depth += 1;
 
                 let config = GLOBAL_CONFIG.read();
                 if ocx.header.command() == Put
-                    && (emb_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32
+                    && (ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32
                         > config.header.container_embedding_high_watermark()
-                        || emb_context.root_container.as_mut().size() >= config.container_embedding_limit
-                        || (emb_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32
+                        || ocx.embedded_traversal_context.root_container.as_mut().size() >= config.container_embedding_limit
+                        || (ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32
                             > config.header.container_embedding_high_watermark() / 2
-                            && emb_context.root_container.as_mut().size() >= config.container_embedding_limit / 2))
+                            && ocx.embedded_traversal_context.root_container.as_mut().size() >= config.container_embedding_limit / 2))
                 {
                     eject_container(node_head, ocx, ctx);
                     node_head = unsafe {
-                        (emb_context.root_container.as_mut() as *mut Container as *mut c_void).add(ctx.current_container_offset as usize)
+                        (ocx.embedded_traversal_context.root_container.as_mut() as *mut Container as *mut c_void).add(ctx.current_container_offset as usize)
                             as *mut NodeHeader
                     };
-                    ocx.embedded_traversal_context = Some(emb_context);
                 } else {
                     ctx.current_container_offset += offset as i32;
                     ocx.header.set_next_container_valid(EmbeddedContainerValid);
-                    ocx.embedded_traversal_context = Some(emb_context);
                     ocx.next_container_pointer = unsafe {
-                        Some(Box::from_raw(ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut()
+                        Some(Box::from_raw(ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut()
                             as *mut EmbeddedContainer as *mut HyperionPointer))
                     };
                     return OK;
@@ -756,9 +735,9 @@ pub fn get_child_container_pointer(
             unsafe {
                 *childcon = NonNull::new((node_head as *mut c_void).add(get_offset_child_container(node_head)) as *mut HyperionPointer);
             }
-            ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth = 0;
+            ocx.embedded_traversal_context.embedded_container_depth = 0;
             ocx.header.set_next_container_valid(ContainerValid);
-            ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container = None;
+            ocx.embedded_traversal_context.next_embedded_container = None;
             OK
         },
         _ => ChildContainerMissing,
@@ -778,8 +757,8 @@ pub fn create_node(
     let required: usize = size_of::<NodeHeader>() + set_key_after_creation as usize + input_memory_consumption;
 
     if container_depth > 0 {
-        ocx.jump_context.as_mut().unwrap().predecessor = None;
-        ocx.jump_context.as_mut().unwrap().top_node_key = ctx.first_char as i32;
+        ocx.jump_context.predecessor = None;
+        ocx.jump_context.top_node_key = ctx.first_char as i32;
         absolute_key = ctx.first_char;
     }
 
@@ -797,9 +776,7 @@ pub fn create_node(
         InnerNode
     });
     as_top_node_mut(node_head).set_container_type(container_depth);
-    let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-    emb_ctx.root_container.as_mut().update_space_usage((1 + input_memory_consumption + set_key_after_creation as usize) as i16, ocx, ctx);
-    ocx.embedded_traversal_context = Some(emb_ctx);
+    update_space_usage((1 + input_memory_consumption + set_key_after_creation as usize) as i16, ocx, ctx);
 
     if set_key_after_creation {
         set_nodes_key2(node_head as *mut Node, ocx, ctx, false, absolute_key);
@@ -836,19 +813,17 @@ pub fn get_child_container_nomod(
         ChildLinkType::EmbeddedContainer => {
             safe_sub_node_jump_table_context(ocx, ctx);
             let offset: usize = get_offset_child_container(node_head);
-            let mut emb_context: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
 
-            emb_context.next_embedded_container =
+            ocx.embedded_traversal_context.next_embedded_container =
                 unsafe { Some(Box::from_raw((node_head.as_mut().unwrap() as *mut NodeHeader as *mut c_void).add(offset) as *mut EmbeddedContainer)) };
 
-            emb_context.embedded_stack.as_mut().unwrap()[emb_context.embedded_container_depth as usize] =
-                Some(AtomicEmbContainer::new_from_pointer(emb_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
-            emb_context.embedded_container_depth += 1;
-            ocx.embedded_traversal_context = Some(emb_context);
+            ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[ocx.embedded_traversal_context.embedded_container_depth as usize] =
+                Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
+            ocx.embedded_traversal_context.embedded_container_depth += 1;
             ctx.current_container_offset += offset as i32;
             ocx.header.set_next_container_valid(EmbeddedContainerValid);
             ocx.next_container_pointer = unsafe {
-                Some(Box::from_raw(ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut()
+                Some(Box::from_raw(ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut()
                     as *mut EmbeddedContainer as *mut HyperionPointer))
             };
             OK
@@ -857,9 +832,9 @@ pub fn get_child_container_nomod(
             unsafe {
                 *childcon = Some(Box::from_raw((node_head as *mut c_void).add(get_offset_child_container(node_head)) as *mut HyperionPointer));
             }
-            ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth = 0;
+            ocx.embedded_traversal_context.embedded_container_depth = 0;
             ocx.header.set_next_container_valid(ContainerValid);
-            ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container = None;
+            ocx.embedded_traversal_context.next_embedded_container = None;
             OK
         },
         _ => ChildContainerMissing,
@@ -879,7 +854,7 @@ pub fn get_successor_embedded(
             skipped_bytes += offset as u32;
 
             if ctx.current_container_offset as u32 + skipped_bytes
-                >= ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut().size() as u32
+                >= ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32
             {
                 return 0;
             }
@@ -898,7 +873,7 @@ pub fn get_successor_embedded(
         successor_ptr = unsafe { (node_head as *mut c_void).add(skipped_bytes as usize) as *mut Node };
 
         if ctx.current_container_offset as u32 + skipped_bytes
-            >= ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut().size() as u32
+            >= ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut().size() as u32
         {
             return 0;
         }
@@ -986,9 +961,7 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
         let mut target = (ocx.get_root_container_pointer() as *mut c_void)
             .add(offset_to_jumptable0) as *mut u16;
         shift_container(target as *mut c_void, size_of::<TopNodeJumpTable>(), bytes_to_move as usize);
-        let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-        emb_ctx.root_container.as_mut().update_space_usage(size_of::<TopNodeJumpTable>() as i16, ocx, ctx);
-        ocx.embedded_traversal_context = Some(emb_ctx);
+        update_space_usage(size_of::<TopNodeJumpTable>() as i16, ocx, ctx);
         node_head = (ocx.get_root_container_pointer() as *mut c_void).add(offset)
             as *mut NodeHeader;
         assert!(!as_top_node(node_head).jump_table_present());
@@ -1066,9 +1039,7 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
                 let shift_by = ((size_of::<NodeHeader>() + 1) * numer_of_missing) - first_insert_is_relative as usize;
 
                 shift_container(scan_node as *mut c_void, shift_by, bytes_to_move as usize);
-                let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-                emb_ctx.root_container.as_mut().update_space_usage(shift_by as i16, ocx, &mut tmp_ctx);
-                ocx.embedded_traversal_context = Some(emb_ctx);
+                update_space_usage(shift_by as i16, ocx, &mut tmp_ctx);
 
                 as_sub_node_mut(scan_node).set_type_flag(InnerNode);
                 as_sub_node_mut(scan_node).set_container_type(1);
@@ -1117,9 +1088,9 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
     let container_embedding_hwm = GLOBAL_CONFIG.read().header.container_embedding_high_watermark();
 
     if (ocx.get_root_container().size() >= container_embedding_limit)
-        || (ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth >= CONTAINER_MAX_EMBEDDED_DEPTH as i32)
-        || (ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth > 0
-        && ((ocx.embedded_traversal_context.as_mut().unwrap().embedded_stack.as_mut().unwrap()[0].as_mut().unwrap().borrow_mut().size() as u32) >= (container_embedding_hwm - get_container_link_size() as u32)))
+        || (ocx.embedded_traversal_context.embedded_container_depth >= CONTAINER_MAX_EMBEDDED_DEPTH as i32)
+        || (ocx.embedded_traversal_context.embedded_container_depth > 0
+        && ((ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[0].as_mut().unwrap().borrow_mut().size() as u32) >= (container_embedding_hwm - get_container_link_size() as u32)))
     {
         let pc_delta = ocx.get_pc_ejection_context().path_compressed_node_header.size() as i32 - get_container_link_size() as i32;
         if pc_delta < 0 {
@@ -1144,24 +1115,20 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             if pc_delta >= 0 {
                 write_bytes(tail_target.add(container_tail as usize) as *mut u8, 0, pc_delta as usize);
             }
-            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-            emb_ctx.root_container.as_mut().update_space_usage(diff as i16, ocx, ctx);
-            ocx.embedded_traversal_context = Some(emb_ctx);
+            update_space_usage(diff as i16, ocx, ctx);
 
             (*link).ptr = initialize_container(ocx.arena.as_mut().unwrap().as_mut());
             new_container = get_pointer(ocx.arena.as_mut().unwrap().as_mut(), &mut (*link).ptr, 1, ocx.chained_pointer_hook);
-            ocx.embedded_traversal_context.as_mut().unwrap().root_container = Box::from_raw(new_container as *mut Container);
+            ocx.embedded_traversal_context.root_container = Box::from_raw(new_container as *mut Container);
         }
 
-        let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-        emb_ctx.embedded_container_depth = 0;
+        ocx.embedded_traversal_context.embedded_container_depth = 0;
         ocx.header.set_next_container_valid(ContainerValid);
-        emb_ctx.next_embedded_container = None;
+        ocx.embedded_traversal_context.next_embedded_container = None;
         ocx.next_container_pointer = unsafe { Some(Box::new((*link).ptr.clone())) };
-        emb_ctx.root_container_pointer = Box::new(ocx.next_container_pointer.as_mut().unwrap().as_mut().clone());
-        emb_ctx.root_container = unsafe { Box::from_raw(new_container as *mut Container) };
-        ctx.current_container_offset = emb_ctx.root_container.as_mut().get_container_head_size();
-        ocx.embedded_traversal_context = Some(emb_ctx);
+        ocx.embedded_traversal_context.root_container_pointer = Box::new(ocx.next_container_pointer.as_mut().unwrap().as_mut().clone());
+        ocx.embedded_traversal_context.root_container = unsafe { Box::from_raw(new_container as *mut Container) };
+        ctx.current_container_offset = ocx.embedded_traversal_context.root_container.as_mut().get_container_head_size();
 
         let data_offset = unsafe { (ocx.get_root_container_pointer() as *mut c_void).add(ocx.get_root_container().get_container_head_size() as usize) };
         let mut consumed_newcon = 0;
@@ -1275,7 +1242,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
         ocx.flush_jump_table_sub_context();
     }
     else {
-        if ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth == 0 {
+        if ocx.embedded_traversal_context.embedded_container_depth == 0 {
             safe_sub_node_jump_table_context(ocx, ctx);
         }
 
@@ -1286,15 +1253,13 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 (node_head as *mut c_void).add(child_container_offset)
             };
             unsafe { ocx.get_root_container().wrap_shift_container(child_container, required); }
-            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-            emb_ctx.root_container.update_space_usage(required as i16, ocx, ctx);
-            ocx.embedded_traversal_context = Some(emb_ctx);
+            update_space_usage(required as i16, ocx, ctx);
 
             unsafe {
-                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container =
+                ocx.embedded_traversal_context.next_embedded_container =
                     Some(Box::from_raw((node_head as *mut c_void).add(child_container_offset) as *mut EmbeddedContainer));
                 let value_present = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
-                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().set_size(
+                ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().set_size(
                     (size_of::<EmbeddedContainer>() + size_of::<NodeHeader>() + 1 + value_present * size_of::<NodeValue>()) as u8
                 );
                 let embedded_top = (node_head as *mut c_void).add(child_container_offset + size_of::<EmbeddedContainer>()) as *mut NodeHeader;
@@ -1327,15 +1292,13 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             };
             unsafe { ocx.get_root_container().wrap_shift_container(child_container, required); }
 
-            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-            emb_ctx.root_container.update_space_usage(required as i16, ocx, ctx);
-            ocx.embedded_traversal_context = Some(emb_ctx);
+            update_space_usage(required as i16, ocx, ctx);
 
             unsafe {
-                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container =
+                ocx.embedded_traversal_context.next_embedded_container =
                     Some(Box::from_raw((node_head as *mut c_void).add(child_container_offset) as *mut EmbeddedContainer));
                 let value_present = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
-                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().set_size(
+                ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().set_size(
                     (size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>()) as u8
                 );
 
@@ -1375,16 +1338,15 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             node_head = meta_expand(ocx, ctx, required as u32);
 
             let child_container = unsafe { (node_head as *mut c_void).add(child_container_offset) };
-            let mut emb_ctx = ocx.embedded_traversal_context.take().unwrap();
-            emb_ctx.root_container.update_space_usage(required as i16, ocx, ctx);
-            ocx.embedded_traversal_context = Some(emb_ctx);
+            unsafe { ocx.embedded_traversal_context.root_container().wrap_shift_container(child_container, required); }
+            update_space_usage(required as i16, ocx, ctx);
 
             let remaining_partial_key = pc_key_len - 2;
             unsafe {
-                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container =
+                ocx.embedded_traversal_context.next_embedded_container =
                     Some(Box::from_raw((node_head as *mut c_void).add(child_container_offset) as *mut EmbeddedContainer));
                 let value_present = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
-                ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().set_size(
+                ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().set_size(
                     (size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>() + remaining_partial_key) as u8
                 );
 
@@ -1438,10 +1400,10 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             }
         }
 
-        let current_embedded_container_depth = ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth;
-        ocx.embedded_traversal_context.as_mut().unwrap().embedded_stack.as_mut().unwrap()[current_embedded_container_depth as usize] =
-            Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.as_mut().unwrap().next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
-        ocx.embedded_traversal_context.as_mut().unwrap().embedded_container_depth += 1;
+        let current_embedded_container_depth = ocx.embedded_traversal_context.embedded_container_depth;
+        ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap()[current_embedded_container_depth as usize] =
+            Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.next_embedded_container.as_mut().unwrap().as_mut() as *mut EmbeddedContainer));
+        ocx.embedded_traversal_context.embedded_container_depth += 1;
         ocx.next_container_pointer = None;
 
         as_sub_node_mut(node_head).set_child_container(ChildLinkType::EmbeddedContainer);
@@ -1467,7 +1429,7 @@ pub fn inject_sublevel_reference_key(node_head: *mut NodeHeader, ocx: &mut Opera
         let node_offset: i32 = (node_head as *mut c_void)
             .offset_from(ocx.get_root_container_pointer() as *mut c_void)
             as i32;
-        let free_size_left: i32 = ocx.embedded_traversal_context.as_mut().unwrap().root_container.free_bytes() as i32;
+        let free_size_left: i32 = ocx.embedded_traversal_context.root_container.free_bytes() as i32;
         let bytes_to_move: i32 = ocx.get_root_container().size() as i32 - (node_offset + free_size_left);
         copy(node_head as *mut u8, target as *mut u8, bytes_to_move as usize);
         write_bytes(node_head as *mut u8, 0, size_of::<NodeHeader>() + 1 - relative as usize);
@@ -1475,9 +1437,7 @@ pub fn inject_sublevel_reference_key(node_head: *mut NodeHeader, ocx: &mut Opera
         as_top_node_mut(node_head).set_container_type(1);
     }
 
-    let mut emb_ctx: EmbeddedTraversalContext = ocx.embedded_traversal_context.take().unwrap();
-    emb_ctx.root_container.as_mut().update_space_usage(size_of::<NodeHeader>() as i16 + 1 - relative as i16, ocx, ctx);
-    ocx.embedded_traversal_context = Some(emb_ctx);
+    update_space_usage(size_of::<NodeHeader>() as i16 + 1 - relative as i16, ocx, ctx);
     ctx.second_char = refkey;
 
     if relative == 0 {

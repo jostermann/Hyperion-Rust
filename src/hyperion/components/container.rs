@@ -71,91 +71,11 @@ impl Container {
         self.size()
     }
 
-    pub fn update_top_node_jumptable_entries(&mut self, operation_context: &mut OperationContext, usage_delta: i16) {
-        if self.jump_table() == 0 {
-            return;
-        }
-
-        let embedded_context: &mut Option<EmbeddedTraversalContext> = &mut operation_context.embedded_traversal_context;
-        let root_container: &mut Container = embedded_context.as_mut().unwrap().root_container.as_mut();
-
-        let jump_table_entry_base: *mut SubNodeJumpTableEntry = root_container.get_jump_table_pointer();
-        let mut jump_table_entry: *mut SubNodeJumpTableEntry = jump_table_entry_base;
-
-        for i in (0..TOPLEVEL_JUMPTABLE_ENTRIES * self.jump_table() as usize).rev() {
-            unsafe {
-                jump_table_entry = jump_table_entry_base.add(i);
-
-                if (*jump_table_entry).key() as i32 > operation_context.jump_context.as_mut().unwrap().top_node_key {
-                    let current_offset: u32 = (*jump_table_entry).offset();
-                    (*jump_table_entry).set_offset(current_offset + usage_delta as u32);
-                } else {
-                    return;
-                }
-            }
-        }
-    }
-
     pub unsafe fn wrap_shift_container(&mut self, start_shift: *mut c_void, shift_len: usize) {
         let remaining_length = self.size() as i64 - ((start_shift as *const u8).offset_from(self as *const Container as *const u8) as u8 + self.free_bytes()) as i64;
         if remaining_length > 0 {
             shift_container(start_shift, shift_len, remaining_length as usize)
         }
-    }
-
-    pub fn update_space_usage(&mut self, usage_delta: i16, operation_context: &mut OperationContext, container_traversal_context: &mut ContainerTraversalContext) {
-        assert!(self.free_bytes() as i16 >= usage_delta);
-        let mut i: usize = 0;
-        self.set_free_size_left((self.free_bytes() as i16 - usage_delta) as u32);
-        let root_container_subchar_set = operation_context.jump_table_sub_context.as_ref().unwrap().root_container_sub_char_set;
-        let root_container_subchar = operation_context.jump_table_sub_context.as_ref().unwrap().root_container_sub_char;
-        let node = &mut operation_context.jump_table_sub_context.as_mut().unwrap().top_node;
-
-        if node.is_some() {
-            let node = node.as_deref_mut().unwrap();
-            if as_top_node(node as *mut NodeHeader).jump_table_present() {
-                let char_to_check =
-                    if root_container_subchar_set {
-                        root_container_subchar
-                    }
-                    else {
-                        container_traversal_context.second_char
-                    };
-                i = char_to_check as usize >> SUBLEVEL_JUMPTABLE_SHIFTBITS;
-
-                let jump_table = unsafe { (node as *const NodeHeader as *const c_void).add(get_offset_jump_table(node as *mut NodeHeader) as usize) as *mut i16 };
-                let mut previous_value: i32 = -1;
-                for i in i..SUBLEVEL_JUMPTABLE_ENTRIES {
-                    unsafe {
-                        assert!(previous_value < *(jump_table.add(i)) as i32);
-                        previous_value = *(jump_table.add(i)) as i32;
-                        *(jump_table.add(i)) += usage_delta;
-                    }
-                }
-            }
-        }
-
-        let predecessor = &mut operation_context.jump_context.as_mut().unwrap().predecessor;
-        if predecessor.is_some() {
-            let predecessor = predecessor.as_deref_mut().unwrap();
-            unsafe {
-                *((predecessor as *const NodeHeader as *const c_void).add(get_offset_jump_table(predecessor as *mut NodeHeader) as usize) as *mut i16) += usage_delta;
-            }
-        }
-
-        self.update_top_node_jumptable_entries(operation_context, usage_delta);
-        let emb_container_depth = operation_context.embedded_traversal_context.as_mut().unwrap().embedded_container_depth;
-
-        if emb_container_depth > 0 {
-            let emb_stack = &mut operation_context.embedded_traversal_context.as_mut().unwrap().embedded_stack.as_mut().unwrap();
-            for i in (0..emb_container_depth as usize).rev() {
-                let current_em_container: &mut EmbeddedContainer = emb_stack[i].as_mut().unwrap().borrow_mut();
-                let current_size = current_em_container.size();
-                current_em_container.set_size(current_size + usage_delta as u8);
-            }
-        }
-
-        container_traversal_context.safe_offset = (self.size() - self.free_bytes() as u32) as i32;
     }
 
     pub fn use_jumptable_2(&mut self, key_char: u8, offset: &mut i32) -> u8 {
@@ -193,6 +113,86 @@ pub fn get_container_head_size() -> i32 {
 
 pub fn get_container_link_size() -> usize {
     size_of::<ContainerLink>()
+}
+
+pub fn update_space_usage(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
+    assert!(ocx.embedded_traversal_context.root_container.free_bytes() as i16 >= usage_delta);
+    let mut i: usize = 0;
+    ocx.embedded_traversal_context.root_container.set_free_size_left((ocx.embedded_traversal_context.root_container.free_bytes() as i16 - usage_delta) as u32);
+    let root_container_subchar_set = ocx.jump_table_sub_context.root_container_sub_char_set;
+    let root_container_subchar = ocx.jump_table_sub_context.root_container_sub_char;
+    let node = &mut ocx.jump_table_sub_context.top_node;
+
+    if node.is_some() {
+        let node = node.as_deref_mut().unwrap();
+        if as_top_node(node as *mut NodeHeader).jump_table_present() {
+            let char_to_check =
+                if root_container_subchar_set {
+                    root_container_subchar
+                }
+                else {
+                    ctx.second_char
+                };
+            i = char_to_check as usize >> SUBLEVEL_JUMPTABLE_SHIFTBITS;
+
+            let jump_table = unsafe { (node as *const NodeHeader as *const c_void).add(get_offset_jump_table(node as *mut NodeHeader) as usize) as *mut i16 };
+            let mut previous_value: i32 = -1;
+            for i in i..SUBLEVEL_JUMPTABLE_ENTRIES {
+                unsafe {
+                    assert!(previous_value < *(jump_table.add(i)) as i32);
+                    previous_value = *(jump_table.add(i)) as i32;
+                    *(jump_table.add(i)) += usage_delta;
+                }
+            }
+        }
+    }
+
+    let predecessor = &mut ocx.jump_context.predecessor;
+    if predecessor.is_some() {
+        let predecessor = predecessor.as_deref_mut().unwrap();
+        unsafe {
+            *((predecessor as *const NodeHeader as *const c_void).add(get_offset_jump_table(predecessor as *mut NodeHeader) as usize) as *mut i16) += usage_delta;
+        }
+    }
+
+    update_top_node_jumptable_entries(ocx, usage_delta);
+    let emb_container_depth = ocx.embedded_traversal_context.embedded_container_depth;
+
+    if emb_container_depth > 0 {
+        let emb_stack = &mut ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap();
+        for i in (0..emb_container_depth as usize).rev() {
+            let current_em_container: &mut EmbeddedContainer = emb_stack[i].as_mut().unwrap().borrow_mut();
+            let current_size = current_em_container.size();
+            current_em_container.set_size(current_size + usage_delta as u8);
+        }
+    }
+
+    ctx.safe_offset = (ocx.embedded_traversal_context.root_container.size() - ocx.embedded_traversal_context.root_container.free_bytes() as u32) as i32;
+}
+
+pub fn update_top_node_jumptable_entries(ocx: &mut OperationContext, usage_delta: i16) {
+    if ocx.embedded_traversal_context.root_container.jump_table() == 0 {
+        return;
+    }
+
+    let embedded_context: &mut EmbeddedTraversalContext = &mut ocx.embedded_traversal_context;
+    let root_container: &mut Container = embedded_context.root_container.as_mut();
+
+    let jump_table_entry_base: *mut SubNodeJumpTableEntry = root_container.get_jump_table_pointer();
+    let mut jump_table_entry: *mut SubNodeJumpTableEntry = jump_table_entry_base;
+
+    for i in (0..TOPLEVEL_JUMPTABLE_ENTRIES * ocx.embedded_traversal_context.root_container.jump_table() as usize).rev() {
+        unsafe {
+            jump_table_entry = jump_table_entry_base.add(i);
+
+            if (*jump_table_entry).key() as i32 > ocx.jump_context.top_node_key {
+                let current_offset: u32 = (*jump_table_entry).offset();
+                (*jump_table_entry).set_offset(current_offset + usage_delta as u32);
+            } else {
+                return;
+            }
+        }
+    }
 }
 
 #[bitfield(u8)]

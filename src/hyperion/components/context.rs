@@ -96,6 +96,20 @@ pub struct ContainerTraversalContext {
     pub second_char: u8,
 }
 
+impl Default for ContainerTraversalContext {
+    fn default() -> Self {
+        ContainerTraversalContext {
+            header: ContainerTraversalHeader::default(),
+            last_top_char_seen: 0,
+            last_sub_char_seen: 0,
+            current_container_offset: 0,
+            safe_offset: 0,
+            first_char: 0,
+            second_char: 0,
+        }
+    }
+}
+
 impl ContainerTraversalContext {
     pub fn flush(&mut self) {
         self.last_top_char_seen = 0;
@@ -144,6 +158,15 @@ pub struct ContainerInjectionContext {
     pub container_pointer: Option<Box<HyperionPointer>>,
 }
 
+impl Default for ContainerInjectionContext {
+    fn default() -> Self {
+        ContainerInjectionContext {
+            root_container: None,
+            container_pointer: None,
+        }
+    }
+}
+
 pub struct EmbeddedTraversalContext {
     pub root_container: Box<Container>,
     pub next_embedded_container: Option<Box<EmbeddedContainer>>,
@@ -176,6 +199,16 @@ pub struct JumpTableSubContext {
     pub top_node: Option<Box<NodeHeader>>,
     pub root_container_sub_char_set: bool,
     pub root_container_sub_char: u8,
+}
+
+impl Default for JumpTableSubContext {
+    fn default() -> Self {
+        JumpTableSubContext {
+            top_node: None,
+            root_container_sub_char_set: false,
+            root_container_sub_char: 0,
+        }
+    }
 }
 
 impl JumpTableSubContext {

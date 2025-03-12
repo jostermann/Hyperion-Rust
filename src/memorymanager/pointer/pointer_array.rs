@@ -127,7 +127,7 @@ impl PointerArray {
 
         // reserve additional POINTER_ARRAY_INCREMENT indices
         vec.reserve(POINTER_ARRAY_INCREMENT);
-        vec.extend((0..POINTER_ARRAY_INCREMENT).map(|_| None));
+        vec.extend((0..POINTER_ARRAY_INCREMENT).map(|_| Some(Box::new(Metabin::default()))));
         self.array = vec.into_boxed_slice();
         true
     }

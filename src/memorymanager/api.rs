@@ -46,14 +46,14 @@ pub fn teardown() {
 }
 
 pub fn register_chained_memory(
-    arena: &mut Arena, hyperion_pointer: &mut HyperionPointer, character: u8, segment: *mut c_void, size: usize, inplace: bool, overallocated: i32
+    arena: *mut Arena, hyperion_pointer: *mut HyperionPointer, character: u8, segment: *mut c_void, size: usize, inplace: bool, overallocated: i32
 ) {
-    let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut arena.lock();
-    let bin: &mut Bin = inner.get_bin_ref(hyperion_pointer);
+    let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut unsafe { arena.as_mut().unwrap() }.lock();
+    let bin: &mut Bin = inner.get_bin_ref(unsafe { hyperion_pointer.as_mut().unwrap() });
     let base: *mut ExtendedHyperionPointer = bin.chunks.get_as_extended();
 
     unsafe {
-        let chain_head: *mut ExtendedHyperionPointer = base.add(hyperion_pointer.chunk_id() as usize);
+        let chain_head: *mut ExtendedHyperionPointer = base.add(unsafe { *hyperion_pointer }.chunk_id() as usize);
         let mut chain_pointer: *mut ExtendedHyperionPointer = chain_head.add((character >> 5) as usize);
 
         if !inplace {
@@ -77,12 +77,12 @@ pub fn register_chained_memory(
     }
 }
 
-pub fn is_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPointer) -> bool {
-    let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut arena.lock();
-    let bin: &mut Bin = inner.get_bin_ref(hyperion_pointer);
+pub fn is_chained_pointer(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer) -> bool {
+    let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut unsafe { arena.as_mut().unwrap() }.lock();
+    let bin: &mut Bin = inner.get_bin_ref(unsafe { hyperion_pointer.as_mut().unwrap() });
     let base: *mut ExtendedHyperionPointer = bin.chunks.get_as_extended();
     unsafe {
-        let chain_head: *mut ExtendedHyperionPointer = base.add(hyperion_pointer.chunk_id() as usize);
+        let chain_head: *mut ExtendedHyperionPointer = base.add(unsafe { *hyperion_pointer }.chunk_id() as usize);
         (*chain_head).header.chained_pointer_count() != 0
     }
 }
@@ -156,24 +156,24 @@ pub fn get_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPoi
     }
 }
 
-pub fn get_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPointer, might_increment: i32, needed_character: u8) -> *mut c_void {
-    get_chunk(&mut arena.lock(), hyperion_pointer, might_increment, needed_character)
+pub fn get_pointer(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer, might_increment: i32, needed_character: u8) -> *mut c_void {
+    get_chunk(&mut unsafe { arena.as_mut().unwrap() }.lock(), unsafe { hyperion_pointer.as_mut().unwrap() }, might_increment, needed_character)
 }
 
-pub fn reallocate(arena: &mut Arena, hyperion_pointer: &mut HyperionPointer, size: usize, needed_character: u8) -> HyperionPointer {
-    reallocate_from_pointer(&mut arena.lock(), hyperion_pointer, size, needed_character)
+pub fn reallocate(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer, size: usize, needed_character: u8) -> HyperionPointer {
+    reallocate_from_pointer(&mut unsafe { arena.as_mut().unwrap() }.lock(), unsafe { hyperion_pointer.as_mut().unwrap() }, size, needed_character)
 }
 
 pub fn malloc_chained(arena: &mut Arena, size: usize, chain_count: i32) -> HyperionPointer {
     get_new_pointer(&mut arena.lock(), size, chain_count)
 }
 
-pub fn malloc(arena: &mut Arena, size: usize) -> HyperionPointer {
-    get_new_pointer(&mut arena.lock(), size, 0)
+pub fn malloc(arena: *mut Arena, size: usize) -> HyperionPointer {
+    get_new_pointer(&mut unsafe { arena.as_mut().unwrap() }.lock(), size, 0)
 }
 
-pub fn free(arena: &mut Arena, hyperion_pointer: &mut HyperionPointer) {
-    free_from_pointer(&mut arena.lock(), hyperion_pointer);
+pub fn free(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer) {
+    free_from_pointer(&mut unsafe { arena.as_mut().unwrap() }.lock(), unsafe { hyperion_pointer.as_mut().unwrap() });
 }
 
 #[cfg(test)]

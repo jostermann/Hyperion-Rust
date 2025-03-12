@@ -134,10 +134,7 @@ pub(crate) unsafe fn allocate_mmap(size: usize) -> *mut c_void {
 }
 
 pub(crate) unsafe fn allocate_heap(size: usize) -> *mut c_void {
-    let p_new: *mut c_void = malloc(size);
-    if !p_new.is_null() {
-        memset(p_new, 0, size);
-    }
+    let p_new: *mut c_void = calloc(size, 1);
     p_new
 }
 
@@ -182,13 +179,23 @@ pub(crate) unsafe fn auto_reallocate_memory(
     if new.is_null() {
         // heap allocation failed
         new = allocate_mmap(new_size);
-        ptr.store(new);
-        return Mmap;
+        if !new.is_null() {
+            ptr.store(new);
+            return Mmap;
+        }
+        else {
+            abort(&mut AllocatorError {
+                message: "Reallocation of memory failed",
+                location: Location::caller(),
+                backtrace: Backtrace::capture()
+            })
+        }
     }
 
     memcpy(new, old, copy_size);
-    assert!(auto_free_memory(old, old_size, allocated_by));
+    ptr.clear();
     ptr.store(new);
+    assert!(auto_free_memory(old, old_size, allocated_by));
     assert!(!ptr.get().is_null());
     Heap
 }

@@ -103,6 +103,7 @@ pub(crate) unsafe fn get_index_first_set_bit_256_2(p_256: *const c_void) -> Opti
     if p_256.is_null() {
         return None;
     }
+    let t = p_256 as *mut u8;
 
     if is_x86_feature_detected!("avx2") {
         get_index_first_set_bit_256_avx2_2(p_256)

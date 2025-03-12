@@ -1,4 +1,3 @@
-use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -56,8 +55,8 @@ impl<T> AtomicPointer<T> {
         self.store(null_mut())
     }
 
-    pub fn get_as_mut_memory(&mut self) -> *mut c_void {
-        self.get() as *mut c_void
+    pub fn get_as_mut_memory(&mut self) -> *mut u8 {
+        self.get() as *mut u8
     }
 
     pub fn borrow_mut(&mut self) -> &mut T {
@@ -83,7 +82,7 @@ pub type AtomicNodeValue = AtomicPointer<NodeValue>;
 
 pub const CONTAINER_SIZE_TYPE_0: usize = 32;
 
-pub fn initialize_container(arena: &mut Arena) -> HyperionPointer {
+pub fn initialize_container(arena: *mut Arena) -> HyperionPointer {
     let mut container_pointer: HyperionPointer = malloc(arena, CONTAINER_SIZE_TYPE_0);
     let container: *mut Container = get_pointer(arena, &mut container_pointer, 1, 0) as *mut Container;
     unsafe {

@@ -1,7 +1,8 @@
 use std::ffi::c_void;
+use std::fs::OpenOptions;
 use std::ptr::{copy, null_mut, write_bytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
-
+use log::{info, warn};
 use crate::memorymanager::components::arena::ArenaInner;
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED};
 use crate::memorymanager::components::metabin::Metabin;
@@ -158,7 +159,7 @@ pub fn get_new_pointer(arena: &mut ArenaInner, size: usize, chained_counter: i32
         extended_pointer.header.set_alloced_by(AllocatedBy::Heap);
         extended_pointer.data.store(unsafe { allocate_heap(new_size) });
         // extended_pointer.header.set_alloced_by(unsafe { auto_allocate_memory(&mut extended_pointer.data, new_size) });
-        extended_pointer.set_flags(size as i32, (new_size - size) as i16, 0, 0, CompressionState::NONE, 0);
+        extended_pointer.set_flags(size as i32, (new_size - size) as i16, 0, 0, CompressionState::NONE, chained_counter as u8);
     }
     new_hyperion_pointer
 }
@@ -199,6 +200,7 @@ pub fn allocate_bin(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPoint
     let metabin: &mut Metabin = arena.get_superbin_ref(hyperion_pointer).get_metabin_candidate().unwrap();
     let superbin: &mut Superbin = unsafe { superbin.as_mut().unwrap() };
     if !metabin.allocate_bin(hyperion_pointer, superbin, chain_count) {
+        metabin.free_chunks = 0;
         superbin.self_update_metaring();
         return allocate_bin(arena, hyperion_pointer, superbin, chain_count);
     }
@@ -372,7 +374,7 @@ fn free_chunks_deflated(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionP
             if (*probe) == hyperion_pointer.chunk_id() {
                 let chunk: *mut c_void = bin.chunks.add_get(bin_size as usize * i);
                 write_bytes(chunk as *mut u8, 0, bin_size as usize);
-                *probe = 0xFF;
+                *probe = u16::MAX;
                 arena.get_metabin_ref(hyperion_pointer).free_chunks += 1;
                 break;
             }
@@ -384,8 +386,6 @@ fn free_chunks_deflated(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionP
 fn free_chunks_normal(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer) {
     if hyperion_pointer.is_extended_pointer() {
         let bin: &mut Bin = arena.get_bin_ref(hyperion_pointer);
-        bin.toggle_chunk_usage(hyperion_pointer.chunk_id() as usize);
-
         let extended_pointer: &mut ExtendedHyperionPointer = bin.get_extended_pointer_to_bin_ref(hyperion_pointer);
         let extended_allocation_size: usize = extended_pointer.alloc_size();
         unsafe { auto_free_memory(extended_pointer.data.get(), extended_allocation_size, extended_pointer.header.alloced_by()) };
@@ -399,7 +399,9 @@ fn free_chunks_normal(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPoi
 
     let metabin: &mut Metabin = arena.get_metabin_ref(hyperion_pointer);
     metabin.set_bin_as_unused(hyperion_pointer.bin_id() as usize, hyperion_pointer.chunk_id() as usize);
-    // metabin.free_chunks += 1;
+    metabin.free_chunks = metabin.free_chunks.wrapping_add(1);
+    let bin: &mut Bin = arena.get_bin_ref(hyperion_pointer);
+    bin.toggle_chunk_usage(hyperion_pointer.chunk_id() as usize);
 }
 
 #[allow(dead_code, unreachable_code, unused)]
@@ -430,3 +432,4 @@ pub fn probe_compression_without(arena: &mut ArenaInner) {
         }
     }
 }
+

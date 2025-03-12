@@ -24,7 +24,7 @@ use crate::memorymanager::internals::compression::CompressionState;
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 
 /// Header type for an `ExtendedHyperionPointer`.
-#[bitfield(u8, order = Msb)]
+#[bitfield(u8)]
 pub struct ExtendedHyperionPointerHeader {
     /// The allocation method used for allocating the data field.
     #[bits(1)]
@@ -72,9 +72,6 @@ impl ExtendedHyperionPointer {
     /// stored data and the pointer are lost. Use this function only when tearing
     /// down the associated Bin._
     pub fn clear_data(&mut self) {
-        unsafe {
-            auto_free_memory(self.data.get(), self.alloc_size(), self.header.alloced_by());
-        }
         self.data.clear();
     }
 

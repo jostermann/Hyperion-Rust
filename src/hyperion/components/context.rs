@@ -7,9 +7,12 @@ use crate::hyperion::components::node::NodeValue;
 use crate::hyperion::components::node_header::{
     NodeHeader, PathCompressedNodeHeader,
 };
-use crate::hyperion::internals::atomic_pointer::{AtomicChar, AtomicEmbContainer, Atomicu8};
+use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
 use crate::memorymanager::api::{Arena, HyperionPointer};
 use bitfield_struct::bitfield;
+use std::ptr::null_mut;
+use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
+
 pub const KEY_DELTA_STATES: usize = 7;
 pub const SUBLEVEL_JUMPTABLE_HWM: usize = 16;
 pub const TOPLEVEL_JUMPTABLE_HWM: usize = 9;
@@ -66,7 +69,7 @@ pub enum TraversalType {
     InvalidTraversal,
 }
 
-#[bitfield(u8, order = Msb)]
+#[bitfield(u8)]
 pub struct ContainerTraversalHeader {
     #[bits(1)]
     pub node_type: u8,
@@ -86,6 +89,8 @@ pub struct ContainerTraversalHeader {
     pub force_shift_before_insert: bool,
 }
 
+#[derive(Default)]
+#[repr(C)]
 pub struct ContainerTraversalContext {
     pub header: ContainerTraversalHeader,
     pub last_top_char_seen: u8,
@@ -94,20 +99,6 @@ pub struct ContainerTraversalContext {
     pub safe_offset: i32,
     pub first_char: u8,
     pub second_char: u8,
-}
-
-impl Default for ContainerTraversalContext {
-    fn default() -> Self {
-        ContainerTraversalContext {
-            header: ContainerTraversalHeader::default(),
-            last_top_char_seen: 0,
-            last_sub_char_seen: 0,
-            current_container_offset: 0,
-            safe_offset: 0,
-            first_char: 0,
-            second_char: 0,
-        }
-    }
 }
 
 impl ContainerTraversalContext {
@@ -135,6 +126,7 @@ impl ContainerTraversalContext {
     }
 }
 
+#[repr(C)]
 pub struct PathCompressedEjectionContext {
     pub node_value: NodeValue,
     pub partial_key: [u8; 127],
@@ -153,62 +145,49 @@ impl Default for PathCompressedEjectionContext {
     }
 }
 
+#[derive(Default)]
+#[repr(C)]
 pub struct ContainerInjectionContext {
-    pub root_container: Option<Box<Container>>,
-    pub container_pointer: Option<Box<HyperionPointer>>,
+    pub root_container: Option<*mut Container>,
+    pub container_pointer: Option<*mut HyperionPointer>,
 }
 
-impl Default for ContainerInjectionContext {
-    fn default() -> Self {
-        ContainerInjectionContext {
-            root_container: None,
-            container_pointer: None,
-        }
-    }
-}
 
+#[repr(C)]
 pub struct EmbeddedTraversalContext {
-    pub root_container: Box<Container>,
-    pub next_embedded_container: Option<Box<EmbeddedContainer>>,
+    pub root_container: *mut Container,
+    pub next_embedded_container: Option<*mut EmbeddedContainer>,
     pub embedded_stack: Option<[Option<AtomicEmbContainer>; CONTAINER_MAX_EMBEDDED_DEPTH]>,
     pub next_embedded_container_offset: i32,
     pub embedded_container_depth: i32,
-    pub root_container_pointer: Box<HyperionPointer>,
+    pub root_container_pointer: *mut HyperionPointer,
 }
 
 impl Default for EmbeddedTraversalContext {
     fn default() -> Self {
         EmbeddedTraversalContext {
-            root_container: Box::default(),
+            root_container: null_mut(),
             next_embedded_container: None,
             embedded_stack: None,
             next_embedded_container_offset: 0,
             embedded_container_depth: 0,
-            root_container_pointer: Box::default()
+            root_container_pointer: null_mut()
         }
     }
 }
 
 impl EmbeddedTraversalContext {
     pub fn root_container(&mut self) -> &mut Container {
-        self.root_container.as_mut()
+        unsafe { self.root_container.as_mut().expect(ERR_NO_CAST_MUT_REF) }
     }
 }
 
+#[derive(Default)]
+#[repr(C)]
 pub struct JumpTableSubContext {
-    pub top_node: Option<Box<NodeHeader>>,
+    pub top_node: Option<*mut NodeHeader>,
     pub root_container_sub_char_set: bool,
     pub root_container_sub_char: u8,
-}
-
-impl Default for JumpTableSubContext {
-    fn default() -> Self {
-        JumpTableSubContext {
-            top_node: None,
-            root_container_sub_char_set: false,
-            root_container_sub_char: 0,
-        }
-    }
 }
 
 impl JumpTableSubContext {
@@ -219,22 +198,13 @@ impl JumpTableSubContext {
     }
 }
 
+#[derive(Default)]
+#[repr(C)]
 pub struct JumpContext {
-    pub predecessor: Option<Box<NodeHeader>>,
+    pub predecessor: Option<*mut NodeHeader>,
     pub top_node_predecessor_offset_absolute: i32,
     pub sub_nodes_seen: i32,
     pub top_node_key: i32,
-}
-
-impl Default for JumpContext {
-    fn default() -> Self {
-        JumpContext {
-            predecessor: None,
-            top_node_predecessor_offset_absolute: 0,
-            sub_nodes_seen: 0,
-            top_node_key: 0
-        }
-    }
 }
 
 impl JumpContext {
@@ -247,7 +217,7 @@ impl JumpContext {
 
     pub fn duplicate(&mut self) -> JumpContext {
         JumpContext {
-            predecessor: self.predecessor.as_mut().map(|node| Box::new(node.deep_copy())),
+            predecessor: self.predecessor.as_mut().map(|predecessor| *predecessor),
             top_node_predecessor_offset_absolute: self.top_node_predecessor_offset_absolute,
             sub_nodes_seen: self.sub_nodes_seen,
             top_node_key: self.top_node_key,
@@ -255,10 +225,11 @@ impl JumpContext {
     }
 }
 
+#[repr(C)]
 pub struct RangeQueryContext {
-    pub key_begin: Box<u8>,
-    pub current_key: Box<u8>,
-    pub arena: Box<Arena>,
+    pub key_begin: *mut u8,
+    pub current_key: *mut u8,
+    pub arena: *mut Arena,
     pub current_stack_depth: u16,
     pub current_key_offset: u16,
     pub key_len: u16,

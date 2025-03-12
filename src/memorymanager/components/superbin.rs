@@ -15,7 +15,7 @@ pub(crate) const SUPERBLOCK_ARRAY_MAXSIZE: usize = 1 << SUPERBLOCK_INDEX_SIZE_BI
 
 pub(crate) const SUPERBLOCK_MAX_METABINS: usize = 16384;
 
-#[bitfield(u64, order = Msb)]
+#[bitfield(u64)]
 pub(crate) struct SuperbinHeader {
     #[bits(6)]
     pub(crate) superbin_id: u8,

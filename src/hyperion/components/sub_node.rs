@@ -31,7 +31,7 @@ impl ChildLinkType {
     }
 }
 
-#[bitfield(u8, order = Msb)]
+#[bitfield(u8)]
 pub struct SubNode {
     #[bits(2)]
     pub type_flag: NodeType,

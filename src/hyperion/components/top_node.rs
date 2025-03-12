@@ -2,7 +2,7 @@ use bitfield_struct::bitfield;
 
 use crate::hyperion::components::node::NodeType;
 
-#[bitfield(u8, order = Msb)]
+#[bitfield(u8)]
 pub struct TopNode {
     #[bits(2)]
     pub type_flag: NodeType,
@@ -14,10 +14,10 @@ pub struct TopNode {
     pub delta: u8,
 
     #[bits(1)]
-    pub jump_successor_present: bool,
+    pub jump_table_present: bool,
 
     #[bits(1)]
-    pub jump_table_present: bool
+    pub jump_successor_present: bool,
 }
 
 impl TopNode {

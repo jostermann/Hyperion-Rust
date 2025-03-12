@@ -1,66 +1,60 @@
-use std::ffi::c_void;
-use std::intrinsics::copy;
-use std::ptr::write_bytes;
 use bitfield_struct::bitfield;
-use libc::pthread_spinlock_t;
+use std::intrinsics::copy;
+use std::ptr::{read_unaligned, write_bytes, write_unaligned};
 
-use crate::hyperion::components::context::{ContainerTraversalContext, EmbeddedTraversalContext};
+use crate::hyperion::components::context::ContainerTraversalContext;
 use crate::hyperion::components::jump_table::{SubNodeJumpTable, SubNodeJumpTableEntry, SUBLEVEL_JUMPTABLE_ENTRIES, SUBLEVEL_JUMPTABLE_SHIFTBITS, TOPLEVEL_JUMPTABLE_ENTRIES};
-use crate::hyperion::components::node_header::{as_top_node, get_offset_jump_table, NodeHeader};
+use crate::hyperion::components::node_header::{as_top_node, get_offset_jump, get_offset_jump_table};
 use crate::hyperion::components::operation_context::OperationContext;
-use crate::hyperion::internals::atomic_pointer::{AtomicArena, CONTAINER_SIZE_TYPE_0};
+use crate::hyperion::internals::atomic_pointer::CONTAINER_SIZE_TYPE_0;
 use crate::hyperion::internals::core::GLOBAL_CONFIG;
 use crate::memorymanager::api::{Arena, HyperionPointer};
 
 pub const CONTAINER_MAX_EMBEDDED_DEPTH: usize = 28;
 pub const CONTAINER_MAX_FREESIZE: usize = CONTAINER_SIZE_TYPE_0;
 
-#[bitfield(u32, order = Msb)]
+#[bitfield(u32)]
 pub struct Container {
     #[bits(19)]
     pub size: u32,
 
-    #[bits(8)]
-    pub free_bytes: u8,
+    #[bits(2)]
+    pub split_delay: u8,
 
     #[bits(3)]
     pub jump_table: u8,
 
-    #[bits(2)]
-    pub split_delay: u8
+    #[bits(8)]
+    pub free_bytes: u8,
 }
 
 impl Container {
+    // OK
     pub fn get_jump_table_size(&self) -> i32 {
         (self.jump_table() as usize * size_of::<SubNodeJumpTable>()) as i32
     }
 
-    pub fn get_jump_table_entry_count(&self) -> i32 {
-        (self.jump_table() as usize * TOPLEVEL_JUMPTABLE_ENTRIES) as i32
+    // OK
+    pub fn get_jump_table_entry_count(&self) -> usize {
+        self.jump_table() as usize * TOPLEVEL_JUMPTABLE_ENTRIES
     }
 
+    // OK
     pub fn get_jump_table_pointer(&mut self) -> *mut SubNodeJumpTableEntry {
-        let container_pointer: *mut Container = self as *mut Self;
-        unsafe { container_pointer.add(1) as *mut SubNodeJumpTableEntry }
+        unsafe { (self as *mut Self).add(1) as *mut SubNodeJumpTableEntry }
     }
 
-    pub fn get_jump_table_entry_mut(&mut self) -> &mut SubNodeJumpTableEntry {
-        let container_pointer: *mut Container = self as *mut Self;
-        unsafe { (container_pointer.add(1) as *mut SubNodeJumpTableEntry).as_mut().unwrap() }
-    }
-
+    // OK
     pub fn get_container_head_size(&self) -> i32 {
         size_of::<Container>() as i32
     }
 
-    pub fn get_container_link_size(&self) -> i32 {
-        size_of::<ContainerLink>() as i32
-    }
-
+    // OK
     pub fn set_free_size_left(&mut self, size_left: u32) {
         self.set_free_bytes(size_left as u8);
     }
 
+    // OK
     pub fn increment_container_size(&mut self, required_minimum: i32) -> u32 {
         let container_increment: u8 = GLOBAL_CONFIG.read().header.container_size_increment();
         let mut factor: i32 = required_minimum / container_increment as i32;
@@ -71,13 +65,7 @@ impl Container {
         self.size()
     }
 
-    pub unsafe fn wrap_shift_container(&mut self, start_shift: *mut c_void, shift_len: usize) {
-        let remaining_length = self.size() as i64 - ((start_shift as *const u8).offset_from(self as *const Container as *const u8) as u8 + self.free_bytes()) as i64;
-        if remaining_length > 0 {
-            shift_container(start_shift, shift_len, remaining_length as usize)
-        }
-    }
-
+    // OK
     pub fn use_jumptable_2(&mut self, key_char: u8, offset: &mut i32) -> u8 {
         let items: i32 = TOPLEVEL_JUMPTABLE_ENTRIES as i32 * self.jump_table() as i32;
         let jt_entry: *mut SubNodeJumpTableEntry = self.get_jump_table_pointer();
@@ -85,10 +73,10 @@ impl Container {
         let mut i: i32 = items - 1;
         let mut jt_entry_tmp: *mut SubNodeJumpTableEntry = unsafe { jt_entry.add((i / 2) as usize) };
         if unsafe { (*jt_entry_tmp).key() > key_char } {
-            i = i / 2;
+            i /= 2;
         }
 
-        for i in (0..i + 1).rev() {
+        for i in (0..=i).rev() {
             unsafe {
                 jt_entry_tmp = jt_entry.add(i as usize);
                 if (*jt_entry_tmp).key() <= key_char {
@@ -102,42 +90,42 @@ impl Container {
     }
 }
 
-pub unsafe fn shift_container(start_shift: *mut c_void, shift_len: usize, container_tail: usize) {
-    copy(start_shift as *mut u8, start_shift.add(shift_len) as *mut u8, container_tail);
-    write_bytes(start_shift as *mut u8, 0, shift_len);
+// OK
+pub unsafe fn shift_container(start_shift: *mut u8, shift_len: usize, container_tail: usize) {
+    copy(start_shift, start_shift.add(shift_len), container_tail);
+    write_bytes(start_shift, 0, shift_len);
 }
 
+pub unsafe fn wrap_shift_container(container: *mut Container, start_shift: *mut u8, shift_len: usize) {
+    let remaining_length: i64 = (*container).size() as i64 - ((start_shift as *const u8).offset_from(container as *const u8) as i64 + (*container).free_bytes() as i64);
+    if remaining_length > 0 {
+        shift_container(start_shift, shift_len, remaining_length as usize)
+    }
+}
+
+// OK
 pub fn get_container_head_size() -> i32 {
     size_of::<Container>() as i32
 }
 
+// OK
 pub fn get_container_link_size() -> usize {
     size_of::<ContainerLink>()
 }
 
-pub fn update_space_usage(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
-    assert!(ocx.embedded_traversal_context.root_container.free_bytes() as i16 >= usage_delta);
-    let mut i: usize = 0;
-    ocx.embedded_traversal_context.root_container.set_free_size_left((ocx.embedded_traversal_context.root_container.free_bytes() as i16 - usage_delta) as u32);
-    let root_container_subchar_set = ocx.jump_table_sub_context.root_container_sub_char_set;
-    let root_container_subchar = ocx.jump_table_sub_context.root_container_sub_char;
-    let node = &mut ocx.jump_table_sub_context.top_node;
+fn update_jump_table(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
+    if let Some(stored_node) = ocx.jump_table_sub_context.top_node.as_mut() {
+        if as_top_node(*stored_node).jump_table_present() {
+            let char_to_check: u8 = if ocx.jump_table_sub_context.root_container_sub_char_set {
+                ocx.jump_table_sub_context.root_container_sub_char
+            }
+            else {
+                ctx.second_char
+            };
 
-    if node.is_some() {
-        let node = node.as_deref_mut().unwrap();
-        if as_top_node(node as *mut NodeHeader).jump_table_present() {
-            let char_to_check =
-                if root_container_subchar_set {
-                    root_container_subchar
-                }
-                else {
-                    ctx.second_char
-                };
-            i = char_to_check as usize >> SUBLEVEL_JUMPTABLE_SHIFTBITS;
-
-            let jump_table = unsafe { (node as *const NodeHeader as *const c_void).add(get_offset_jump_table(node as *mut NodeHeader) as usize) as *mut i16 };
+            let jump_table: *mut i16 = unsafe { (*stored_node as *const u8).add(get_offset_jump_table(*stored_node) as usize) as *mut i16 };
             let mut previous_value: i32 = -1;
-            for i in i..SUBLEVEL_JUMPTABLE_ENTRIES {
+            for i in (char_to_check as usize >> SUBLEVEL_JUMPTABLE_SHIFTBITS)..SUBLEVEL_JUMPTABLE_ENTRIES {
                 unsafe {
                     assert!(previous_value < *(jump_table.add(i)) as i32);
                     previous_value = *(jump_table.add(i)) as i32;
@@ -147,52 +135,68 @@ pub fn update_space_usage(usage_delta: i16, ocx: &mut OperationContext, ctx: &mu
         }
     }
 
-    let predecessor = &mut ocx.jump_context.predecessor;
-    if predecessor.is_some() {
-        let predecessor = predecessor.as_deref_mut().unwrap();
-        unsafe {
-            *((predecessor as *const NodeHeader as *const c_void).add(get_offset_jump_table(predecessor as *mut NodeHeader) as usize) as *mut i16) += usage_delta;
-        }
-    }
-
-    update_top_node_jumptable_entries(ocx, usage_delta);
-    let emb_container_depth = ocx.embedded_traversal_context.embedded_container_depth;
-
-    if emb_container_depth > 0 {
-        let emb_stack = &mut ocx.embedded_traversal_context.embedded_stack.as_mut().unwrap();
-        for i in (0..emb_container_depth as usize).rev() {
-            let current_em_container: &mut EmbeddedContainer = emb_stack[i].as_mut().unwrap().borrow_mut();
-            let current_size = current_em_container.size();
-            current_em_container.set_size(current_size + usage_delta as u8);
-        }
-    }
-
-    ctx.safe_offset = (ocx.embedded_traversal_context.root_container.size() - ocx.embedded_traversal_context.root_container.free_bytes() as u32) as i32;
-}
-
-pub fn update_top_node_jumptable_entries(ocx: &mut OperationContext, usage_delta: i16) {
-    if ocx.embedded_traversal_context.root_container.jump_table() == 0 {
-        return;
-    }
-
-    let embedded_context: &mut EmbeddedTraversalContext = &mut ocx.embedded_traversal_context;
-    let root_container: &mut Container = embedded_context.root_container.as_mut();
-
-    let jump_table_entry_base: *mut SubNodeJumpTableEntry = root_container.get_jump_table_pointer();
-    let mut jump_table_entry: *mut SubNodeJumpTableEntry = jump_table_entry_base;
-
-    for i in (0..TOPLEVEL_JUMPTABLE_ENTRIES * ocx.embedded_traversal_context.root_container.jump_table() as usize).rev() {
-        unsafe {
-            jump_table_entry = jump_table_entry_base.add(i);
-
-            if (*jump_table_entry).key() as i32 > ocx.jump_context.top_node_key {
-                let current_offset: u32 = (*jump_table_entry).offset();
-                (*jump_table_entry).set_offset(current_offset + usage_delta as u32);
-            } else {
-                return;
+    if let Some(predecessor) = ocx.jump_context.predecessor.as_mut() {
+        if as_top_node(*predecessor).jump_successor_present() {
+            unsafe {
+                let target = (*predecessor as *mut u8).add(get_offset_jump(*predecessor));
+                let current_value = read_unaligned(target as *const i16);
+                write_unaligned(target as *mut i16, current_value.wrapping_add(usage_delta));
             }
         }
     }
+}
+
+fn update_embedded_container(usage_delta: i16, ocx: &mut OperationContext) {
+    if let Some(emb_stack) = ocx.embedded_traversal_context.embedded_stack.as_mut() {
+        for container in emb_stack.iter_mut().take(ocx.embedded_traversal_context.embedded_container_depth as usize).rev() {
+            if let Some(current_em_container) = container.as_mut().map(|c| c.borrow_mut()) {
+                let current_size: u8 = current_em_container.size();
+                current_em_container.set_size(current_size + usage_delta as u8);
+            }
+        }
+        if let Some(emb_container) = emb_stack[0].as_mut() {
+            assert!(emb_container.borrow_mut().size() < (ocx.get_root_container().size() as u8));
+        }
+    }
+}
+
+// OK
+fn update_top_node_jump_table_entries(ocx: &mut OperationContext, usage_delta: i16) {
+    if ocx.get_root_container().jump_table() == 0 {
+        return;
+    }
+
+    let jump_table_entry_base: *mut SubNodeJumpTableEntry = get_jump_table_pointer(ocx.embedded_traversal_context.root_container);
+
+    for i in (0..TOPLEVEL_JUMPTABLE_ENTRIES * ocx.get_root_container().jump_table() as usize).rev() {
+        unsafe {
+            let jump_table_entry: *mut SubNodeJumpTableEntry = jump_table_entry_base.add(i);
+
+            if (*jump_table_entry).key() as i32 > ocx.jump_context.top_node_key {
+                (*jump_table_entry).set_offset((*jump_table_entry).offset() + usage_delta as u32);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+// OK
+pub fn update_space_usage(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
+    assert!(ocx.get_root_container().free_bytes() as i16 >= usage_delta);
+    let free_bytes: i16 = ocx.get_root_container().free_bytes() as i16;
+    ocx.get_root_container().set_free_size_left((free_bytes - usage_delta) as u32);
+    update_jump_table(usage_delta, ocx, ctx);
+    update_top_node_jump_table_entries(ocx, usage_delta);
+    update_embedded_container(usage_delta, ocx);
+
+    ctx.safe_offset = (ocx.get_root_container().size() - ocx.get_root_container().free_bytes() as u32) as i32;
+    assert!(ctx.safe_offset > (size_of::<Container>() as i32));
+}
+
+// OK
+pub fn get_jump_table_pointer(container: *mut Container) -> *mut SubNodeJumpTableEntry {
+    unsafe { container.add(1) as *mut SubNodeJumpTableEntry }
 }
 
 #[bitfield(u8)]
@@ -200,7 +204,7 @@ pub struct EmbeddedContainer {
     pub size: u8
 }
 
-#[repr(align(8))]
+#[repr(C, packed)]
 pub struct ContainerLink {
     pub ptr: HyperionPointer
 }
@@ -216,7 +220,7 @@ pub struct RootContainerStats {
 
 pub struct RootContainerEntryInner {
     pub stats: RootContainerStats,
-    pub arena: Option<Box<Arena>>,
+    pub arena: Option<*mut Arena>,
     pub hyperion_pointer: Option<HyperionPointer> // TODO KEY_PPP
 }
 

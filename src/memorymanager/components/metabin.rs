@@ -1,5 +1,5 @@
 use std::array::from_fn;
-
+use std::ptr::write_bytes;
 use crate::memorymanager::components::bin::{Bin, BINOFFSET_BITS, FREELIST_ELEMENT_BITS};
 use crate::memorymanager::components::superbin::{Superbin, SUPERBLOCK_INDEX_SIZE_BIT};
 use crate::memorymanager::internals::compression::CompressionState;
@@ -56,7 +56,7 @@ impl Metabin {
     pub(crate) fn initialize(&mut self, id: u16) {
         self.id = id;
         self.free_chunks = 255;
-        self.bin_usage_mask.fill(0xFF);
+        self.bin_usage_mask.fill(u32::MAX);
     }
 
     pub(crate) fn teardown(&mut self, size: usize) {

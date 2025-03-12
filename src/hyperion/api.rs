@@ -1,8 +1,12 @@
-use spin::mutex::Mutex;
 use crate::hyperion::components::container::{RootContainerArray, RootContainerEntry, RootContainerEntryInner, RootContainerStats, ROOT_NODES};
+use crate::hyperion::components::node::NodeValue;
+use crate::hyperion::components::return_codes::ReturnCode;
 use crate::hyperion::internals::atomic_pointer::initialize_container;
-use crate::hyperion::internals::core::{get_global_cfg, GlobalConfiguration, GLOBAL_CONFIG};
+use crate::hyperion::internals::core::{int_get, int_put, GLOBAL_CONFIG};
 use crate::memorymanager::api::{get_next_arena, initialize};
+use once_cell::sync::Lazy;
+use spin::mutex::Mutex;
+use spin::RwLock;
 
 pub fn initialize_globals() {
     GLOBAL_CONFIG.write().header.set_initialized(1);
@@ -47,8 +51,8 @@ pub fn bootstrap() -> RootContainerArray {
     root_container_array
 }
 
-pub fn get_root_container_entry<'a>(root_container_array: &'a mut RootContainerArray, key: *const u8, key_len: u16) -> &'a mut RootContainerEntry {
-    let mut root_container_entry = if ROOT_NODES == 1 {
+pub fn get_root_container_entry(root_container_array: &mut RootContainerArray, key: *const u8, key_len: u16) -> &mut RootContainerEntry {
+    let root_container_entry = if ROOT_NODES == 1 {
         root_container_array.root_container_entries[0].as_mut().unwrap()
     }
     else {
@@ -58,9 +62,39 @@ pub fn get_root_container_entry<'a>(root_container_array: &'a mut RootContainerA
         let mut data = root_container_entry.inner.lock();
 
         if data.arena.is_none() {
-            data.arena = unsafe { Some(Box::from_raw(get_next_arena())) };
-            data.hyperion_pointer = Some(initialize_container(data.arena.as_mut().unwrap().as_mut()));
+            data.arena = Some(get_next_arena());
+
+            if let Some(ref mut arena) = data.arena {
+                data.hyperion_pointer = Some(initialize_container(*arena));
+            }
         }
     }
     root_container_entry
 }
+
+type PutRef = fn(&mut RootContainerArray, *mut u8, u16, Option<*mut NodeValue>) -> ReturnCode;
+type GetRef = fn(&mut RootContainerArray, *mut u8, u16, &mut *mut NodeValue) -> ReturnCode;
+
+static PUT_REF_CB: Lazy<RwLock<PutRef>> = Lazy::new(|| RwLock::new(put_no_ppp));
+static GET_REF_CB: Lazy<RwLock<GetRef>> = Lazy::new(|| RwLock::new(get_no_pp));
+
+fn put_no_ppp(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, input_value: Option<*mut NodeValue>) -> ReturnCode {
+    let root_container_entry = get_root_container_entry(root_container_array, key, key_len);
+    let mut entry = root_container_entry.inner.lock();
+    int_put(&mut entry, key, key_len, input_value)
+}
+
+fn get_no_pp(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, mut return_value: &mut *mut NodeValue) -> ReturnCode {
+    let root_container_entry = get_root_container_entry(root_container_array, key, key_len);
+    let mut entry = root_container_entry.inner.lock();
+    int_get(&mut entry, key, key_len, *return_value)
+}
+
+pub fn put(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, input_value: Option<*mut NodeValue>) -> ReturnCode {
+    PUT_REF_CB.read()(root_container_array, key, key_len, input_value)
+}
+
+pub fn get(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, return_value: &mut *mut NodeValue) -> ReturnCode {
+    GET_REF_CB.read()(root_container_array, key, key_len, return_value)
+}
+

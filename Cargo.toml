@@ -11,6 +11,9 @@ either = "1.13.0"
 zstd-sys = "2.0.13"
 spin = "0.9.8"
 once_cell = "1.20.3"
+backtrace-on-stack-overflow = "0.3.0"
+log = "0.4.26"
+backtrace = "0.3.74"
 
 [features]
 compression = []
@@ -18,11 +21,11 @@ migration = []
 triestats = []
 
 
-#[profile.dev]
-#debug = true
-#
-#[profile.release]
-#debug = true
-#
-#[profile.test]
-#debug = true
+[profile.dev]
+debug = true
+
+[profile.release]
+debug = true
+
+[profile.test]
+debug = true

@@ -22,26 +22,26 @@ use std::slice::from_raw_parts;
 
 use bitfield_struct::bitfield;
 
-#[bitfield(u32, order = Msb)]
+#[bitfield(u32, debug = true)]
 pub struct HyperionPointerHeader {
     /// 6 bit superbin id, ranging from 0 to 63
     #[bits(6)]
     pub superbin_id: u8,
 
+    /// 12 bit chunk id, ranging from 0 to 4095
+    #[bits(12)]
+    pub chunk_id: u16,
+
     /// 14 bit metabin id, ranging from 0 to 16383
     #[bits(14)]
     pub metabin_id: u16,
-
-    /// 12 bit chunk id, ranging from 0 to 4095
-    #[bits(12)]
-    pub chunk_id: u16
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 #[repr(C, packed)]
 pub struct HyperionPointer {
+    header: HyperionPointerHeader,
     bin_id: u8,
-    header: HyperionPointerHeader
 }
 
 impl Default for HyperionPointer {
@@ -135,7 +135,7 @@ impl HyperionPointer {
 fn read<T>(addr: *const T) -> T {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "arm", target_arch = "aarch64"))]
     unsafe {
-        return ptr::read(addr);
+        return ptr::read_unaligned(addr);
     }
 
     unsafe {
@@ -151,7 +151,7 @@ fn read<T>(addr: *const T) -> T {
 fn write<T>(addr: *mut T, value: T) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "arm", target_arch = "aarch64"))]
     unsafe {
-        ptr::write(addr, value);
+        ptr::write_unaligned(addr, value);
         return;
     }
 
@@ -166,9 +166,9 @@ fn write<T>(addr: *mut T, value: T) {
 fn write_header(addr: *mut HyperionPointerHeader, mod_fn: impl FnOnce(&mut HyperionPointerHeader)) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "arm", target_arch = "aarch64"))]
     unsafe {
-        let mut header: HyperionPointerHeader = ptr::read(addr);
+        let mut header: HyperionPointerHeader = ptr::read_unaligned(addr);
         mod_fn(&mut header);
-        ptr::write(addr, header);
+        ptr::write_unaligned(addr, header);
         return;
     }
 

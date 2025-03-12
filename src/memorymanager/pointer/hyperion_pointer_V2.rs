@@ -22,7 +22,7 @@ use std::ptr;
 use std::ptr::{read_unaligned, write_unaligned};
 use std::slice::from_raw_parts;
 
-#[bitfield(u32, order = Msb)]
+#[bitfield(u32)]
 pub struct HyperionPointerHeader {
     /// 6 bit superbin id, ranging from 0 to 63
     #[bits(6)]

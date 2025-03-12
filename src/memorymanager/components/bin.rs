@@ -1,3 +1,4 @@
+use std::ptr::write_bytes;
 use bitfield_struct::bitfield;
 
 use crate::memorymanager::components::superbin::Superbin;
@@ -14,7 +15,7 @@ pub(crate) const FREELIST_ELEMENT_BITS: usize = 32;
 pub(crate) const BIN_FREELIST_ELEMENTS: usize = BIN_ELEMENTS / FREELIST_ELEMENT_BITS; // 128
 pub(crate) const BIN_ELEMENTS_DEFLATED: usize = 256;
 
-#[bitfield(u8, order = Msb)]
+#[bitfield(u8)]
 pub(crate) struct BinHeader {
     #[bits(2)]
     pub(crate) compression_state: CompressionState,
@@ -142,7 +143,7 @@ impl Bin {
     pub(crate) fn initialize(&mut self, superbin: &mut Superbin) {
         self.set_flags(CompressionState::NONE, AllocatedBy::Mmap as u8, 0, 0);
         self.chunks = AtomicMemoryPointer::new();
-        self.chunk_usage_mask.fill(0xFF);
+        self.chunk_usage_mask.fill(u32::MAX);
 
         if superbin.has_cached_bin() {
             self.chunks.clone_from(&superbin.bin_cache);
@@ -159,14 +160,20 @@ impl Bin {
     /// Returns `true`, if the allocation was successful.
     /// Returns `false`, otherwise.
     pub(crate) fn allocate_chunk_unchained(&mut self, hyperion_pointer: &mut HyperionPointer) -> bool {
-        self.new_chunk_allocation_space_available()
+        let c = self.new_chunk_allocation_space_available();
+        let can = c.unwrap();
+        self.toggle_chunk_usage(can as usize);
+        hyperion_pointer.set_chunk_id(can as u16);
+        self.header.set_chance2nd_alloc(0);
+        true
+        /*self.new_chunk_allocation_space_available()
             .map(|candidate| {
                 self.toggle_chunk_usage(candidate as usize);
                 hyperion_pointer.set_chunk_id(candidate as u16);
                 self.header.set_chance2nd_alloc(0);
                 true
             })
-            .unwrap_or(false)
+            .unwrap_or(false)*/
     }
 
     /// Allocates 8 consecutive stored chunks.Updates the given `HyperionPointer` to point
@@ -177,14 +184,23 @@ impl Bin {
     pub(crate) fn allocate_consecutive_chunks(&mut self, hyperion_pointer: &mut HyperionPointer) -> bool {
         // Check for 8 free consecutive chunks
         // 8 consecutive chunks are free, if their byte representation in the usage mask is == 255
-        for (i, byte) in self.chunk_usage_mask.iter_mut().take(8).enumerate() {
+        for i in 0..(BIN_ELEMENTS / 8) {
+            let byte = unsafe { self.chunk_usage_mask.as_mut_ptr().add(i) as *mut u8 };
+            if unsafe { *byte == 255 } {
+                unsafe { *byte = 0 };
+                hyperion_pointer.set_chunk_id(i as u16 * 8);
+                self.header.set_chance2nd_alloc(0);
+                return true;
+            }
+        }
+        /*for (i, byte) in self.chunk_usage_mask.iter_mut().take(1).enumerate() {
             if *byte == 255 {
                 *byte = 0;
                 hyperion_pointer.set_chunk_id(i as u16 * 8);
                 self.header.set_chance2nd_alloc(0);
                 return true;
             }
-        }
+        }*/
         false
     }
 

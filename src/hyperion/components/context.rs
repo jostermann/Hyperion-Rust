@@ -4,14 +4,12 @@ use crate::hyperion::components::context::TraversalType::{
     FilledTwoCharSubNodeInFirstCharScope, FilledTwoCharTopNode, FilledTwoCharTopNodeInFirstCharScope, InvalidTraversal,
 };
 use crate::hyperion::components::node::NodeValue;
-use crate::hyperion::components::node_header::{
-    NodeHeader, PathCompressedNodeHeader,
-};
+use crate::hyperion::components::node_header::{NodeHeader, PathCompressedNodeHeader};
 use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
+use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
 use crate::memorymanager::api::{Arena, HyperionPointer};
 use bitfield_struct::bitfield;
 use std::ptr::null_mut;
-use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
 
 pub const KEY_DELTA_STATES: usize = 7;
 pub const SUBLEVEL_JUMPTABLE_HWM: usize = 16;
@@ -110,7 +108,8 @@ impl ContainerTraversalContext {
     }
 
     pub fn as_combined_header(&mut self) -> TraversalType {
-        let bit_pattern = (self.header.container_type(), self.header.in_first_char_scope(), self.header.two_chars(), self.header.node_type());
+        let bit_pattern: (u8, bool, bool, u8) =
+            (self.header.container_type(), self.header.in_first_char_scope(), self.header.two_chars(), self.header.node_type());
         match bit_pattern {
             (0, false, false, 0) => EmptyOneCharTopNode,
             (0, false, false, 1) => FilledOneCharTopNode,
@@ -123,6 +122,26 @@ impl ContainerTraversalContext {
             (1, true, true, 1) => FilledTwoCharSubNodeInFirstCharScope,
             _ => InvalidTraversal,
         }
+    }
+
+    pub fn key_delta_top(&mut self) -> u8 {
+        self.header.last_top_char_set()
+            .then(|| self.first_char - self.last_top_char_seen)
+            .filter(|&delta| (delta as usize) <= KEY_DELTA_STATES)
+            .unwrap_or(0)
+        /*(self.header.last_top_char_set() && ((self.first_char - self.last_top_char_seen) as usize) <= KEY_DELTA_STATES)
+            .then_some(self.first_char - self.last_top_char_seen)
+            .unwrap_or(0)*/
+    }
+
+    pub fn key_delta_sub(&mut self) -> u8 {
+        self.header.last_sub_char_set()
+            .then(|| self.second_char - self.last_sub_char_seen)
+            .filter(|&delta| (delta as usize) <= KEY_DELTA_STATES)
+            .unwrap_or(0)
+        /*(self.header.last_sub_char_set() && ((self.second_char - self.last_sub_char_seen) as usize) <= KEY_DELTA_STATES)
+            .then_some(self.second_char - self.last_top_char_seen)
+            .unwrap_or(0)*/
     }
 }
 
@@ -152,7 +171,6 @@ pub struct ContainerInjectionContext {
     pub container_pointer: Option<*mut HyperionPointer>,
 }
 
-
 #[repr(C)]
 pub struct EmbeddedTraversalContext {
     pub root_container: *mut Container,
@@ -171,7 +189,7 @@ impl Default for EmbeddedTraversalContext {
             embedded_stack: None,
             next_embedded_container_offset: 0,
             embedded_container_depth: 0,
-            root_container_pointer: null_mut()
+            root_container_pointer: null_mut(),
         }
     }
 }
@@ -217,7 +235,7 @@ impl JumpContext {
 
     pub fn duplicate(&mut self) -> JumpContext {
         JumpContext {
-            predecessor: self.predecessor.as_mut().map(|predecessor| *predecessor),
+            predecessor: self.predecessor.as_mut().map(|predecessor: &mut *mut NodeHeader| *predecessor),
             top_node_predecessor_offset_absolute: self.top_node_predecessor_offset_absolute,
             sub_nodes_seen: self.sub_nodes_seen,
             top_node_key: self.top_node_key,
@@ -236,4 +254,3 @@ pub struct RangeQueryContext {
     pub do_report: u8,
     pub stack: [Option<TraversalContext>; 128],
 }
-

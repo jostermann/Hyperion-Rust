@@ -53,7 +53,7 @@ pub fn register_chained_memory(
     let base: *mut ExtendedHyperionPointer = bin.chunks.get_as_extended();
 
     unsafe {
-        let chain_head: *mut ExtendedHyperionPointer = base.add(unsafe { *hyperion_pointer }.chunk_id() as usize);
+        let chain_head: *mut ExtendedHyperionPointer = base.add((*hyperion_pointer).chunk_id() as usize);
         let mut chain_pointer: *mut ExtendedHyperionPointer = chain_head.add((character >> 5) as usize);
 
         if !inplace {
@@ -82,7 +82,7 @@ pub fn is_chained_pointer(arena: *mut Arena, hyperion_pointer: *mut HyperionPoin
     let bin: &mut Bin = inner.get_bin_ref(unsafe { hyperion_pointer.as_mut().unwrap() });
     let base: *mut ExtendedHyperionPointer = bin.chunks.get_as_extended();
     unsafe {
-        let chain_head: *mut ExtendedHyperionPointer = base.add(unsafe { *hyperion_pointer }.chunk_id() as usize);
+        let chain_head: *mut ExtendedHyperionPointer = base.add((*hyperion_pointer).chunk_id() as usize);
         (*chain_head).header.chained_pointer_count() != 0
     }
 }

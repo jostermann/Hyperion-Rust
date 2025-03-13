@@ -3,10 +3,11 @@ use crate::hyperion::components::node::NodeValue;
 use crate::hyperion::components::return_codes::ReturnCode;
 use crate::hyperion::internals::atomic_pointer::initialize_container;
 use crate::hyperion::internals::core::{int_get, int_put, GLOBAL_CONFIG};
-use crate::memorymanager::api::{get_next_arena, initialize};
+use crate::memorymanager::api::{get_next_arena, initialize, teardown};
 use once_cell::sync::Lazy;
 use spin::mutex::Mutex;
 use spin::RwLock;
+pub use crate::hyperion::internals::core::log_to_file;
 
 pub fn initialize_globals() {
     GLOBAL_CONFIG.write().header.set_initialized(1);
@@ -51,6 +52,10 @@ pub fn bootstrap() -> RootContainerArray {
     root_container_array
 }
 
+pub fn clear_test() {
+    teardown();
+}
+
 pub fn get_root_container_entry(root_container_array: &mut RootContainerArray, key: *const u8, key_len: u16) -> &mut RootContainerEntry {
     let root_container_entry = if ROOT_NODES == 1 {
         root_container_array.root_container_entries[0].as_mut().unwrap()
@@ -84,7 +89,7 @@ fn put_no_ppp(root_container_array: &mut RootContainerArray, key: *mut u8, key_l
     int_put(&mut entry, key, key_len, input_value)
 }
 
-fn get_no_pp(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, mut return_value: &mut *mut NodeValue) -> ReturnCode {
+fn get_no_pp(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, return_value: &mut *mut NodeValue) -> ReturnCode {
     let root_container_entry = get_root_container_entry(root_container_array, key, key_len);
     let mut entry = root_container_entry.inner.lock();
     int_get(&mut entry, key, key_len, *return_value)

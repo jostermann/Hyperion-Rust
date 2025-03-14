@@ -1,9 +1,10 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::mem::MaybeUninit;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 use libc::{sysinfo, sysinfo as sysinfo_t};
+use spin::{RwLock, RwLockReadGuard};
 
 #[derive(Debug, Copy, Clone)]
 pub struct MemorySettings {
@@ -13,6 +14,13 @@ pub struct MemorySettings {
     pub vm_size: u32
 }
 
+static MEMORY_SETTINGS: RwLock<MemorySettings> = RwLock::new(MemorySettings {
+    sys_total: 0,
+    sys_used: 0,
+    sys_rate: 0.0,
+    vm_size: 0,
+});
+
 static mut MEM_SETTINGS: Mutex<MemorySettings> = Mutex::new(MemorySettings {
     sys_total: 0,
     sys_used: 0,
@@ -21,13 +29,11 @@ static mut MEM_SETTINGS: Mutex<MemorySettings> = Mutex::new(MemorySettings {
 });
 
 fn read_stats() {
-    let mut mem_settings: MutexGuard<MemorySettings> = unsafe { MEM_SETTINGS.lock().unwrap() };
-    *mem_settings = MemorySettings {
-        sys_total: 0,
-        sys_used: 0,
-        sys_rate: 0.0,
-        vm_size: 0
-    };
+    let mut mem_settings = MEMORY_SETTINGS.write();
+    mem_settings.sys_total = 0;
+    mem_settings.sys_used = 0;
+    mem_settings.sys_rate = 0.0;
+    mem_settings.vm_size = 0;
 
     if let Ok(file) = File::open("/proc/self/status") {
         let reader = BufReader::new(file);
@@ -57,11 +63,11 @@ fn read_stats() {
     }
 }
 
-pub fn get_memory_stats(force_update: bool) -> &'static Mutex<MemorySettings> {
+pub fn get_memory_stats<'a>(force_update: bool) -> RwLockReadGuard<'static, MemorySettings> {
     if force_update {
         read_stats();
     }
-    unsafe { &MEM_SETTINGS }
+    MEMORY_SETTINGS.read()
 }
 
 #[cfg(test)]

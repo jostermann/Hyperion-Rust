@@ -3,12 +3,13 @@ use std::fs::OpenOptions;
 use std::ptr::{copy, null_mut, write_bytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use log::{info, warn};
-use crate::memorymanager::components::arena::ArenaInner;
+use spin::RwLock;
+use crate::memorymanager::components::arena::{ArenaInner, NUM_ARENAS};
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED};
 use crate::memorymanager::components::metabin::Metabin;
 use crate::memorymanager::components::superbin::{get_sblock_id, Superbin};
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, auto_reallocate_memory, AllocatedBy};
-use crate::memorymanager::internals::compression::{compress_arena, decompress_extended, CompressionState};
+use crate::memorymanager::internals::compression::{compress_arena, decompress_bin, decompress_extended, CompressionState};
 use crate::memorymanager::internals::simd_common::apply_index_search;
 use crate::memorymanager::internals::system_information::get_memory_stats;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
@@ -26,7 +27,7 @@ pub static DYN_INCREMENT_SIZE: AtomicUsize = AtomicUsize::new(INCREMENT_SIZE_EXT
 #[allow(unused)]
 pub static DYN_PROBE_INTERVAL: AtomicUsize = AtomicUsize::new(PROBE_COMPRESSION_INTERVAL_INACTIVE);
 
-pub static mut PROBE_COMPRESSION: fn(&mut ArenaInner) = probe_compression_without;
+pub static PROBE_COMPRESSION: RwLock<fn(&mut ArenaInner)> = RwLock::new(probe_compression_with);
 
 enum ReallocationStrategy {
     StayExtended,
@@ -76,9 +77,7 @@ pub fn get_chunk(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer,
     let data: *mut c_void = get_chunk_pointer(arena, hyperion_pointer);
     let current_bin_from_pointer: &mut Bin = arena.get_bin_ref(hyperion_pointer);
     current_bin_from_pointer.header.set_chance2nd_read(0);
-    unsafe {
-        PROBE_COMPRESSION(arena);
-    }
+    PROBE_COMPRESSION.read()(arena);
     data
 }
 
@@ -94,9 +93,7 @@ pub fn get_chunk_pointer_from_extended(arena: &mut ArenaInner, hyperion_pointer:
         extended_pointer.chance2nd_read = 0;
         extended_pointer.data.get()
     };
-    unsafe {
-        PROBE_COMPRESSION(arena);
-    }
+    PROBE_COMPRESSION.read()(arena);
     extended_pointer_data
 }
 
@@ -408,7 +405,7 @@ fn free_chunks_normal(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPoi
 pub fn probe_compression_with(arena: &mut ArenaInner) {
     if DYN_PROBE_INTERVAL.fetch_sub(1, Ordering::SeqCst) == 0 {
         compress_arena(arena);
-        let factor: f64 = (1.0 - get_memory_stats(false).lock().unwrap().sys_rate).powf(2.0);
+        let factor: f64 = (1.0 - get_memory_stats(false).sys_rate).powf(2.0);
         DYN_PROBE_INTERVAL.store((PROBE_COMPRESSION_INTERVAL_INACTIVE as f64 * factor) as usize, Ordering::SeqCst)
     }
 }
@@ -423,9 +420,8 @@ pub fn probe_compression_without(arena: &mut ArenaInner) {
 
         if DYN_PROBE_INTERVAL.fetch_sub(1, Ordering::SeqCst) == 0 {
             if compress_arena(arena) {
-                unsafe {
-                    PROBE_COMPRESSION = probe_compression_with;
-                }
+                let mut probe_function = PROBE_COMPRESSION.write();
+                *probe_function = probe_compression_with;
                 DYN_INCREMENT_SIZE.store(INCREMENT_SIZE_EXT_TIGHT, Ordering::SeqCst);
             }
             DYN_PROBE_INTERVAL.store(PROBE_COMPRESSION_INTERVAL_INACTIVE, Ordering::SeqCst);

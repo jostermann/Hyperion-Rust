@@ -73,7 +73,7 @@ pub(crate) struct CompressedContainerHead {
 }
 
 pub(crate) fn get_compression_strategy() -> CompressionStrategy {
-    let sys_rate: f64 = get_memory_stats(false).lock().unwrap().sys_rate;
+    let sys_rate: f64 = get_memory_stats(false).sys_rate;
 
     if sys_rate > COMPRESSION_LIMIT_S3 {
         CompressionStrategy::ZSTD

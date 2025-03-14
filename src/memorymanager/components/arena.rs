@@ -1,9 +1,9 @@
 use std::array::from_fn;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
-
+use lazy_static::lazy_static;
 use spin::mutex::Mutex;
-use spin::MutexGuard;
+use spin::{MutexGuard, RwLock};
 
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS};
 use crate::memorymanager::components::metabin::Metabin;
@@ -16,32 +16,31 @@ use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 pub(crate) const NUM_ARENAS: usize = 2;
 pub(crate) const COMPRESSION: usize = 16646144;
 
-pub static mut ARENAS: Vec<Arena> = vec![];
+lazy_static! {
+    pub static ref ARENAS: RwLock<Vec<Arena>> = RwLock::new(vec![]);
+    static ref INIT_ITERATOR: AtomicUsize = AtomicUsize::new(0);
+}
+
 static INIT_ONCE: Once = Once::new();
-static INIT_ITERATOR: AtomicUsize = AtomicUsize::new(0);
 
 pub fn init_arenas() {
-    unsafe {
-        INIT_ONCE.call_once(|| {
-            ARENAS.reserve(NUM_ARENAS);
-            for _ in 0..NUM_ARENAS {
-                ARENAS.push(Arena::default())
-            }
-        });
-    }
+    INIT_ONCE.call_once(|| {
+        let mut rw_lock = ARENAS.write();
+        rw_lock.reserve(NUM_ARENAS);
+        for _ in 0..NUM_ARENAS {
+            rw_lock.push(Arena::default())
+        }
+    });
 }
 
 pub fn get_next_arena() -> *mut Arena {
     init_arenas();
-    unsafe {
-        let arena: *mut Arena = &mut ARENAS[INIT_ITERATOR.fetch_sub(1, Ordering::SeqCst) % NUM_ARENAS] as *mut Arena;
-        arena
-    }
+    &mut (ARENAS.write()[INIT_ITERATOR.fetch_sub(1, Ordering::SeqCst) % NUM_ARENAS]) as *mut Arena
 }
 
 pub fn get_arena_mut(key: u32) -> *mut Arena {
     init_arenas();
-    unsafe { &mut ARENAS[key as usize % NUM_ARENAS] as *mut Arena }
+    &mut (ARENAS.write()[key as usize % NUM_ARENAS]) as *mut Arena
 }
 
 pub struct ArenaInner {

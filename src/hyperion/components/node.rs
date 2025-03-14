@@ -36,6 +36,31 @@ impl NodeType {
     }
 }
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum NodeState {
+    TopNode = 0,
+    SubNode = 1
+}
+
+impl NodeState {
+    /// Transforms its states into a 1 bit representation.
+    pub(crate) const fn into_bits(self) -> u8 {
+        self as _
+    }
+
+    /// Transforms its states from an 8 bit value into a named state.
+    ///
+    /// # Panics
+    /// Panics if an invalid node type was found.
+    pub(crate) const fn from_bits(value: u8) -> Self {
+        match value {
+            0 => NodeState::TopNode,
+            1 => NodeState::SubNode,
+            _ => panic!("Use of undefined node state"),
+        }
+    }
+}
+
 pub struct NodeValue {
     pub v: u64,
 }
@@ -69,8 +94,8 @@ pub fn get_sub_node_key(node: *mut Node, ctx: &mut ContainerTraversalContext, fo
 
 fn calculate_stored_value(node: *mut Node, ctx: &mut ContainerTraversalContext) -> u8 {
     match as_top_node(unsafe { &mut (*node).header }).container_type() {
-        0 if ctx.header.last_top_char_set() => ctx.first_char - ctx.last_top_char_seen,
-        0 => ctx.first_char,
+        NodeState::TopNode if ctx.header.last_top_char_set() => ctx.first_char - ctx.last_top_char_seen,
+        NodeState::TopNode => ctx.first_char,
         _ if ctx.header.last_sub_char_set() => ctx.second_char - ctx.last_sub_char_seen,
         _ => ctx.second_char,
     }
@@ -150,7 +175,7 @@ fn handle_jump_context(node: *mut Node, diff: u8, absolute_key: u8, ocx: &mut Op
         let current_jump_context: JumpContext = ocx.jump_context.duplicate();
         update_space_usage(-1, ocx, ctx);
         ocx.jump_context = current_jump_context;
-    } else if as_top_node(unsafe { &mut (*node).header }).container_type() == 0 && ocx.jump_context.top_node_key < 255 {
+    } else if as_top_node(unsafe { &mut (*node).header }).container_type() == NodeState::TopNode && ocx.jump_context.top_node_key < 255 {
         let current_jump_context: JumpContext = ocx.jump_context.duplicate();
         ocx.jump_context.predecessor = Some(node as *mut NodeHeader);
 

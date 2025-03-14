@@ -3,7 +3,7 @@ use crate::hyperion::components::context::TraversalType::{
     EmptyOneCharTopNode, EmptyTwoCharTopNode, EmptyTwoCharTopNodeInFirstCharScope, FilledOneCharSubNode, FilledOneCharTopNode, FilledTwoCharSubNode,
     FilledTwoCharSubNodeInFirstCharScope, FilledTwoCharTopNode, FilledTwoCharTopNodeInFirstCharScope, InvalidTraversal,
 };
-use crate::hyperion::components::node::NodeValue;
+use crate::hyperion::components::node::{NodeState, NodeValue};
 use crate::hyperion::components::node_header::{NodeHeader, PathCompressedNodeHeader};
 use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
 use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
@@ -46,7 +46,7 @@ impl OperationCommand {
     }
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct TraversalContext {
     pub offset: i32,
@@ -76,7 +76,7 @@ pub struct ContainerTraversalHeader {
     #[bits(1)]
     pub in_first_char_scope: bool,
     #[bits(1)]
-    pub container_type: u8,
+    pub container_type: NodeState,
     #[bits(1)]
     pub last_top_char_set: bool,
     #[bits(1)]
@@ -108,18 +108,18 @@ impl ContainerTraversalContext {
     }
 
     pub fn as_combined_header(&mut self) -> TraversalType {
-        let bit_pattern: (u8, bool, bool, u8) =
+        let bit_pattern: (NodeState, bool, bool, u8) =
             (self.header.container_type(), self.header.in_first_char_scope(), self.header.two_chars(), self.header.node_type());
         match bit_pattern {
-            (0, false, false, 0) => EmptyOneCharTopNode,
-            (0, false, false, 1) => FilledOneCharTopNode,
-            (0, false, true, 0) => EmptyTwoCharTopNode,
-            (0, false, true, 1) => FilledTwoCharTopNode,
-            (0, true, true, 0) => EmptyTwoCharTopNodeInFirstCharScope,
-            (0, true, true, 1) => FilledTwoCharTopNodeInFirstCharScope,
-            (1, false, false, 1) => FilledOneCharSubNode,
-            (1, false, true, 1) => FilledTwoCharSubNode,
-            (1, true, true, 1) => FilledTwoCharSubNodeInFirstCharScope,
+            (NodeState::TopNode, false, false, 0) => EmptyOneCharTopNode,
+            (NodeState::TopNode, false, false, 1) => FilledOneCharTopNode,
+            (NodeState::TopNode, false, true, 0) => EmptyTwoCharTopNode,
+            (NodeState::TopNode, false, true, 1) => FilledTwoCharTopNode,
+            (NodeState::TopNode, true, true, 0) => EmptyTwoCharTopNodeInFirstCharScope,
+            (NodeState::TopNode, true, true, 1) => FilledTwoCharTopNodeInFirstCharScope,
+            (NodeState::SubNode, false, false, 1) => FilledOneCharSubNode,
+            (NodeState::SubNode, false, true, 1) => FilledTwoCharSubNode,
+            (NodeState::SubNode, true, true, 1) => FilledTwoCharSubNodeInFirstCharScope,
             _ => InvalidTraversal,
         }
     }
@@ -252,5 +252,6 @@ pub struct RangeQueryContext {
     pub current_key_offset: u16,
     pub key_len: u16,
     pub do_report: u8,
+    pub traversed_leaves: i32,
     pub stack: [Option<TraversalContext>; 128],
 }

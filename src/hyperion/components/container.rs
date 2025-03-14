@@ -138,7 +138,7 @@ fn update_jump_table(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut Con
                 let target: *mut i16 = (*predecessor as *mut u8).add(get_offset_jump(*predecessor)) as *mut i16;
                 let current_value: i16 = read_unaligned(target);
                 write_unaligned(target, current_value.wrapping_add(usage_delta));
-                log_to_file(&format!("update_jump_table predecessor to {}", unsafe { read_unaligned(target) }));
+                log_to_file(&format!("update_jump_table predecessor to {}", read_unaligned(target)));
             }
         }
     }
@@ -214,6 +214,7 @@ pub struct RootContainerStats {
     pub gets: i32,
     pub updates: i32,
     pub range_queries: i32,
+    pub range_queries_leaves: i32,
 }
 
 pub struct RootContainerEntryInner {

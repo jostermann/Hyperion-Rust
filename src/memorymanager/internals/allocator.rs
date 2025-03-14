@@ -199,19 +199,3 @@ pub(crate) unsafe fn auto_reallocate_memory(
     assert!(!ptr.get().is_null());
     Heap
 }
-
-// pub(crate) unsafe fn reallocate_heap(p_old: *mut c_void, old_size: usize, new_size: usize) -> *mut c_void {
-// assert!(new_size <= REALLOC_UPPER_LIMIT as usize);
-// let mut p_tmp: *mut c_void = realloc(p_old, new_size);
-// if p_tmp.is_null() {
-// if old_size > new_size {
-// return p_old;
-// }
-//
-// p_tmp = malloc(new_size);
-// assert!(!p_tmp.is_null());
-// memcpy(p_tmp, p_old, old_size);
-// free(p_old);
-// }
-// p_tmp
-// }

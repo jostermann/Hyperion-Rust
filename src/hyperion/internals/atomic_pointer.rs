@@ -19,6 +19,12 @@ impl<T> Clone for AtomicPointer<T> {
     }
 }
 
+impl<T> Default for AtomicPointer<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> AtomicPointer<T> {
     pub fn new() -> AtomicPointer<T> {
         AtomicPointer {

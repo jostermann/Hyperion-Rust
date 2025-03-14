@@ -1,6 +1,6 @@
 use bitfield_struct::bitfield;
 
-use crate::hyperion::components::node::NodeType;
+use crate::hyperion::components::node::{NodeState, NodeType};
 
 #[derive(Debug, PartialOrd, PartialEq, Eq, Ord)]
 pub enum ChildLinkType {
@@ -37,7 +37,7 @@ pub struct SubNode {
     pub type_flag: NodeType,
 
     #[bits(1)]
-    pub container_type: u8,
+    pub container_type: NodeState,
 
     #[bits(3)]
     pub delta: u8,
@@ -52,10 +52,10 @@ impl SubNode {
     }
 
     pub fn is_top_node(&self) -> bool {
-        self.container_type() == 0
+        self.container_type() == NodeState::TopNode
     }
 
     pub fn is_sub_node(&self) -> bool {
-        self.container_type() == 1
+        self.container_type() == NodeState::SubNode
     }
 }

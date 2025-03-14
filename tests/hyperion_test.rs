@@ -1,3 +1,8 @@
+use std::ffi::c_void;
+use std::intrinsics::copy_nonoverlapping;
+use std::ptr::copy;
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::Ordering::Relaxed;
 use hyperion_rust::hyperion::api::{bootstrap, clear_test, get, get_root_container_entry, log_to_file, put};
 use hyperion_rust::hyperion::components::container::Container;
 use hyperion_rust::hyperion::components::node::NodeValue;
@@ -306,7 +311,51 @@ fn test_container_split_06b() {
     clear_test();
 }
 
-#[test]
-fn test_container_split_07() {
+static RANGE_QUERY_COUNTER: AtomicI32 = AtomicI32::new(0);
 
+#[allow(unused_variables)]
+fn range_callback(key: *mut u8, key_len: u16, value: *mut u8) -> i32 {
+    RANGE_QUERY_COUNTER.fetch_add(1, Relaxed);
+    1
 }
+
+/*#[test]
+fn test_container_split_07() {
+    RANGE_QUERY_COUNTER.store(0, Relaxed);
+    let elements = 65000;
+    let mut node_value = NodeValue {
+        v: 0
+    };
+    let mut val: [u8; 16] = [0; 16];
+    let mut root_container_array = bootstrap();
+    let dest = unsafe { val.as_mut_ptr().add(2) as *mut u16 };
+    unsafe { *dest = 0; }
+
+    for i in 0..elements {
+        unsafe {
+            *dest = i;
+            node_value.v = *dest as u64;
+            copy_nonoverlapping(dest, val.as_mut_ptr().add(4) as *mut u16, 2);
+        }
+        log_to_file(&format!("i: {}", i));
+        put(&mut root_container_array, val.as_mut_ptr(), 8, Some(&mut node_value));
+    }
+
+
+    let mut p_ret = &mut node_value as *mut NodeValue;
+
+    for i in 0..elements {
+        unsafe {
+            *dest = i;
+            copy_nonoverlapping(dest, (val.as_mut_ptr() as *mut u16).add(2), 2);
+        }
+        log_to_file(&format!("i: {}", i));
+        let return_code = get(&mut root_container_array, val.as_mut_ptr(), 8, &mut p_ret);
+
+        assert_eq!(return_code, OK);
+        assert_eq!(unsafe { (*p_ret).v }, unsafe { *dest as u64 });
+    }
+
+
+    clear_test();
+}*/

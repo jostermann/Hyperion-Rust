@@ -13,8 +13,6 @@ pub(crate) const INCREMENT_SIZE: usize = 32;
 pub(crate) const SUPERBLOCK_INDEX_SIZE_BIT: u8 = 6;
 pub(crate) const SUPERBLOCK_ARRAY_MAXSIZE: usize = 1 << SUPERBLOCK_INDEX_SIZE_BIT;
 
-pub(crate) const SUPERBLOCK_MAX_METABINS: usize = 16384;
-
 #[bitfield(u64)]
 pub(crate) struct SuperbinHeader {
     #[bits(6)]

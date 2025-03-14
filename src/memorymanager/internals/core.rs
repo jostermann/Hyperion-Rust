@@ -1,9 +1,3 @@
-use std::ffi::c_void;
-use std::fs::OpenOptions;
-use std::ptr::{copy, null_mut, write_bytes};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use log::{info, warn};
-use spin::RwLock;
 use crate::memorymanager::components::arena::{ArenaInner, NUM_ARENAS};
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED};
 use crate::memorymanager::components::metabin::Metabin;
@@ -14,6 +8,10 @@ use crate::memorymanager::internals::simd_common::apply_index_search;
 use crate::memorymanager::internals::system_information::get_memory_stats;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
+use spin::RwLock;
+use std::ffi::c_void;
+use std::ptr::{copy, null_mut, write_bytes};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const INCREMENT_SIZE_EXT: usize = 4096;
 pub const INCREMENT_SIZE_EXT_TIGHT: usize = 256;
@@ -115,10 +113,9 @@ pub fn get_chunk_pointer_deflated(arena: &mut ArenaInner, hyperion_pointer: &mut
 pub fn get_chained_pointer(extended_hyperion_pointer: &mut ExtendedHyperionPointer, needed_character: u8) -> &mut ExtendedHyperionPointer {
     let ptr: *mut ExtendedHyperionPointer = extended_hyperion_pointer as *mut ExtendedHyperionPointer;
     let mut offset: i32 = needed_character as i32 >> (8 - CONTAINER_SPLIT_BITS);
-    let mut iterator: *mut ExtendedHyperionPointer = null_mut();
 
     unsafe {
-        iterator = ptr.add(offset as usize);
+        let mut iterator = ptr.add(offset as usize);
 
         while offset >= 0 {
             if (*iterator).has_data() {
@@ -253,9 +250,7 @@ fn reallocate_extended_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
     let chained_pointer_cnt: u8 =
         arena.get_bin_ref(hyperion_pointer).get_extended_pointer_to_bin_ref(hyperion_pointer).header.chained_pointer_count();
 
-    let reallocation_strategy: ReallocationStrategy = if chained_pointer_cnt > 0 {
-        ReallocationStrategy::StayExtended
-    } else if get_sblock_id(size as u32) == 0 {
+    let reallocation_strategy: ReallocationStrategy = if chained_pointer_cnt > 0 || get_sblock_id(size as u32) == 0 {
         ReallocationStrategy::StayExtended
     } else {
         ReallocationStrategy::ReallocateToNormal

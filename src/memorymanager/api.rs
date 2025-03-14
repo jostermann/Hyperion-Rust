@@ -14,6 +14,7 @@ pub use crate::memorymanager::internals::core::{CONTAINER_SPLIT_BITS, CONTAINER_
 
 pub const ARENA_COMPRESSION: usize = 16646144;
 
+#[derive(Default)]
 pub struct SegmentChain {
     pub chars: [u8; 1usize << CONTAINER_SPLIT_BITS],
     pub pointer: [AtomicMemoryPointer; 1usize << CONTAINER_SPLIT_BITS]
@@ -87,8 +88,8 @@ pub fn is_chained_pointer(arena: *mut Arena, hyperion_pointer: *mut HyperionPoin
     }
 }
 
-pub fn get_all_chained_pointer(segment_chain: &mut SegmentChain, arena: &mut Arena, hyperion_pointer: &mut HyperionPointer) -> i32 {
-    let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut arena.lock();
+pub fn get_all_chained_pointer(segment_chain: &mut SegmentChain, arena: *mut Arena, hyperion_pointer: &mut HyperionPointer) -> i32 {
+    let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut unsafe { arena.as_mut().unwrap() }.lock();
     let bin: &mut Bin = inner.get_bin_ref(hyperion_pointer);
     let base: *mut ExtendedHyperionPointer = bin.chunks.get_as_extended();
     let mut elements: usize = 0;

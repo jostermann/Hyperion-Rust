@@ -41,7 +41,8 @@ pub fn bootstrap() -> RootContainerArray {
                         puts: 0,
                         gets: 0,
                         range_queries: 0,
-                        updates: 0
+                        updates: 0,
+                        range_queries_leaves: 0
                     },
                     arena: None,
                     hyperion_pointer: None,

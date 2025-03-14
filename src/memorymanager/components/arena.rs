@@ -44,10 +44,10 @@ pub fn get_arena_mut(key: u32) -> *mut Arena {
 }
 
 pub struct ArenaInner {
-    pub compression_cache: AtomicMemoryPointer,
-    pub compression_iterator: i16,
-    pub sliding_window: [CompressionSlidingWindow; SLIDING_WINDOW_SIZE],
-    pub superbins: [Superbin; SUPERBLOCK_ARRAY_MAXSIZE]
+    pub(crate) compression_cache: AtomicMemoryPointer,
+    pub(crate) compression_iterator: i16,
+    pub(crate) sliding_window: [CompressionSlidingWindow; SLIDING_WINDOW_SIZE],
+    pub(crate) superbins: [Superbin; SUPERBLOCK_ARRAY_MAXSIZE]
 }
 
 impl ArenaInner {

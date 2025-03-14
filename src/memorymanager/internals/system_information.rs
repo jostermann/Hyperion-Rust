@@ -63,7 +63,7 @@ fn read_stats() {
     }
 }
 
-pub fn get_memory_stats<'a>(force_update: bool) -> RwLockReadGuard<'static, MemorySettings> {
+pub fn get_memory_stats(force_update: bool) -> RwLockReadGuard<'static, MemorySettings> {
     if force_update {
         read_stats();
     }

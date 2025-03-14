@@ -50,7 +50,6 @@ pub(crate) unsafe fn get_index_first_set_bit_256_avx2_2(p_256: *const c_void) ->
     let byte_index = bitmask.trailing_zeros() as usize + 1;
     let byte = *(p_256 as *const i32).add((byte_index - 1) / 4);
     let bit_pos = byte + ((byte_index as i32 - 1) * 8);
-    let t = bit_pos.trailing_zeros() as i32;
     Some(bit_pos.trailing_zeros() as i32)
 }
 

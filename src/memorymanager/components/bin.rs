@@ -1,4 +1,3 @@
-use std::ptr::write_bytes;
 use bitfield_struct::bitfield;
 
 use crate::memorymanager::components::superbin::Superbin;
@@ -97,7 +96,7 @@ impl Bin {
         if self.header.chance2nd_alloc() != 1 {
             return false;
         }
-        let free_chunks = apply_simd(&mut self.chunk_usage_mask, count_set_bits);
+        let free_chunks = apply_simd(&self.chunk_usage_mask, count_set_bits);
         free_chunks == BIN_ELEMENTS as i32
     }
 

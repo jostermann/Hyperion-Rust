@@ -20,7 +20,7 @@ pub(crate) fn apply_index_search(num: u16, field: *const u32) -> i32 {
     unsafe { index_a_in_b_256(num as i16, field_ptr) }
 }
 
-static mut PSEUDORAND: AtomicUsize = AtomicUsize::new(0);
+static PSEUDORAND: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
 pub(crate) unsafe fn prefetch(addr: *const u8) {
@@ -141,9 +141,9 @@ pub(crate) unsafe fn get_index_first_set_bit_4096_2(p_4096: *const c_void) -> Op
     for i in 0..BLOCKS {
         let block = (i + offset) & (BLOCKS - 1);
         let res: Option<i32> = get_index_first_set_bit_256_2(p_4096.add(block * BLOCKS_SIZE));
-        if res.is_some() {
+        if let Some(result) = res {
             PSEUDORAND.store(block, Ordering::Relaxed);
-            return Some((block * BITS_PER_BLOCK) as i32 + res.unwrap());
+            return Some((block * BITS_PER_BLOCK) as i32 + result);
         }
     }
     PSEUDORAND.store(0, Ordering::Relaxed);
@@ -167,7 +167,10 @@ pub(crate) unsafe fn count_set_bits(p_4096: *const c_void) -> i32 {
 }
 
 unsafe fn sorted_insert_256_fallback(a: u16, p_256: *const u16) -> i32 {
-    (0..16).find(|&i| a <= *p_256.add(i)).map_or(-1, |i| if a != *p_256.add(i) { i as i32 } else { -1 })
+    (0i32..16i32)
+        .find(|&i| a <= *p_256.add(i as usize))
+        .filter(|&i| a != *p_256.add(i as usize))
+        .unwrap_or(-1)
 }
 
 pub(crate) unsafe fn sorted_insert_256(a: u16, b: *const u16) -> i32 {
@@ -185,7 +188,9 @@ pub(crate) unsafe fn sorted_insert_256(a: u16, b: *const u16) -> i32 {
 }
 
 unsafe fn sorted_insert_256_fallback_2(a: u16, p_256: *const u16) -> Option<usize> {
-    (0..16).find(|&i| a <= *p_256.add(i)).map_or(None, |i| if a != *p_256.add(i) { Some(i) } else { None })
+    (0..16)
+        .find(|&i| a <= *p_256.add(i))
+        .filter(|&i| a != *p_256.add(i))
 }
 
 pub(crate) unsafe fn sorted_insert_256_2(a: u16, b: *const u16) -> Option<usize> {
@@ -237,8 +242,8 @@ mod ops_test {
             }
 
             assert!(all_bits_set_256_avx2(ptr as *const c_void));
-            assert_eq!(all_bits_set_256_sse41(ptr as *const c_void), true);
-            assert_eq!(all_bits_set_256_fallback(ptr as *const c_void), true);
+            assert!(all_bits_set_256_sse41(ptr as *const c_void));
+            assert!(all_bits_set_256_fallback(ptr as *const c_void));
 
             let ptr2 = alloc(layout);
 
@@ -246,9 +251,9 @@ mod ops_test {
                 ptr.add(i).write(0x00);
             }
 
-            assert_eq!(all_bits_set_256_avx2(ptr2 as *const c_void), false);
-            assert_eq!(all_bits_set_256_sse41(ptr2 as *const c_void), false);
-            assert_eq!(all_bits_set_256_fallback(ptr2 as *const c_void), false);
+            assert!(!all_bits_set_256_avx2(ptr2 as *const c_void));
+            assert!(!all_bits_set_256_sse41(ptr2 as *const c_void));
+            assert!(!all_bits_set_256_fallback(ptr2 as *const c_void));
 
             dealloc(ptr, layout);
             dealloc(ptr2, layout);
@@ -268,7 +273,7 @@ mod ops_test {
                 ptr.add(i).write(0xFF);
             }
 
-            assert_eq!(all_bits_set_4096(ptr as *const c_void), true);
+            assert!(all_bits_set_4096(ptr as *const c_void));
 
             let ptr2 = alloc(layout);
 
@@ -276,7 +281,7 @@ mod ops_test {
                 ptr.add(i).write(0x00);
             }
 
-            assert_eq!(all_bits_set_4096(ptr2 as *const c_void), false);
+            assert!(!all_bits_set_4096(ptr2 as *const c_void));
 
             dealloc(ptr, layout);
             dealloc(ptr2, layout);

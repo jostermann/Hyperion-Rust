@@ -3,12 +3,10 @@ use crate::hyperion::components::container::{
     EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREESIZE,
 };
 use crate::hyperion::components::context::OperationCommand::Put;
-use crate::hyperion::components::context::{
-    ContainerTraversalContext, JumpContext, PathCompressedEjectionContext, RangeQueryContext, KEY_DELTA_STATES,
-};
+use crate::hyperion::components::context::{ContainerTraversalContext, JumpContext, PathCompressedEjectionContext, RangeQueryContext, KEY_DELTA_STATES};
 use crate::hyperion::components::jump_table::{TopNodeJumpTable, SUBLEVEL_JUMPTABLE_ENTRIES, SUBLEVEL_JUMPTABLE_SHIFTBITS};
 use crate::hyperion::components::node::NodeType::{InnerNode, Invalid, LeafNodeEmpty, LeafNodeWithValue};
-use crate::hyperion::components::node::{get_sub_node_key, set_nodes_key2, update_successor_key, Node, NodeType, NodeValue};
+use crate::hyperion::components::node::{get_sub_node_key, set_nodes_key2, update_successor_key, Node, NodeState, NodeType, NodeValue};
 use crate::hyperion::components::node_header::EmbedLinkCommands::{
     CreateEmbeddedContainer, CreateLinkToContainer, CreatePathCompressedNode, TransformPathCompressedNode,
 };
@@ -23,10 +21,7 @@ use crate::hyperion::components::sub_node::{ChildLinkType, SubNode};
 use crate::hyperion::components::top_node::TopNode;
 use crate::hyperion::internals::atomic_pointer::{initialize_container, AtomicEmbContainer};
 use crate::hyperion::internals::core::{initialize_ejected_container, log_to_file, GlobalConfiguration, HyperionCallback, GLOBAL_CONFIG};
-use crate::hyperion::internals::errors::{
-    ERR_EMPTY_EMB_STACK, ERR_EMPTY_EMB_STACK_POS, ERR_NO_ARENA, ERR_NO_CAST_MUT_REF, ERR_NO_CAST_REF, ERR_NO_INPUT_VALUE, ERR_NO_KEY,
-    ERR_NO_NEXT_CONTAINER, ERR_NO_NODE_VALUE, ERR_NO_POINTER, ERR_NO_RETURN_VALUE, ERR_NO_SUCCESSOR,
-};
+use crate::hyperion::internals::errors::{ERR_EMPTY_EMB_STACK, ERR_EMPTY_EMB_STACK_POS, ERR_NO_ARENA, ERR_NO_CAST_MUT_REF, ERR_NO_CAST_REF, ERR_NO_INPUT_VALUE, ERR_NO_KEY, ERR_NO_NEXT_CONTAINER, ERR_NO_NODE_VALUE, ERR_NO_POINTER, ERR_NO_RETURN_VALUE, ERR_NO_SUCCESSOR};
 use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 use bitfield_struct::bitfield;
 use libc::{memcmp, size_t};
@@ -141,7 +136,7 @@ pub fn get_child_link_size(node_head: *mut NodeHeader) -> usize {
 }
 
 pub fn get_offset(node_head: *mut NodeHeader) -> usize {
-    if as_top_node(node_head).container_type() == 0 {
+    if as_top_node(node_head).container_type() == NodeState::TopNode {
         return get_offset_top_node(node_head);
     }
     get_offset_sub_node(node_head)
@@ -743,10 +738,10 @@ pub fn get_child_container_pointer(
 }
 
 pub fn create_node(
-    mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, container_depth: u8,
+    mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, container_depth: NodeState,
     set_key_after_creation: bool, add_value_after_creation: bool, key_delta: u8, embedded: bool,
 ) -> *mut NodeHeader {
-    let mut absolute_key: u8 = if embedded && container_depth == 0 {
+    let mut absolute_key: u8 = if embedded && container_depth == NodeState::TopNode {
         ctx.first_char
     } else {
         ctx.second_char
@@ -758,7 +753,7 @@ pub fn create_node(
         embedded as u8, absolute_key, input_memory_consumption, required
     ));
 
-    if !embedded && container_depth == 0 {
+    if !embedded && container_depth == NodeState::TopNode {
         ocx.jump_context.predecessor = None;
         ocx.jump_context.top_node_key = ctx.first_char as i32;
         absolute_key = ctx.first_char;
@@ -837,7 +832,7 @@ pub fn create_node(
         set_node_value(node_head, ocx);
     }
 
-    if !ctx.header.end_operation() && container_depth > 0 {
+    if !ctx.header.end_operation() && container_depth == NodeState::SubNode {
         if embedded {
             as_sub_node_mut(node_head).set_child_container(ChildLinkType::None);
             embed_or_link_child(node_head, ocx, ctx);
@@ -855,7 +850,7 @@ pub fn get_successor(
     let mut successor_ptr: *mut Node;
     let mut skipped_bytes: u32 = 0;
 
-    if as_top_node(node_head).container_type() == 0 {
+    if as_top_node(node_head).container_type() == NodeState::TopNode {
         if !embedded && as_top_node(node_head).jump_successor_present() {
             skipped_bytes = get_jump_value(node_head) as u32;
             successor_ptr = unsafe { (node_head as *mut u8).add(skipped_bytes as usize) as *mut Node };
@@ -883,10 +878,10 @@ pub fn get_successor(
                 }
 
                 if embedded {
-                    if unsafe { as_top_node(&mut (*successor_ptr).header).container_type() == 0 } {
+                    if unsafe { as_top_node(&mut (*successor_ptr).header).container_type() == NodeState::TopNode } {
                         break;
                     }
-                } else if unsafe { as_top_node(&mut (*successor_ptr).header).container_type() != 1 } {
+                } else if unsafe { as_top_node(&mut (*successor_ptr).header).container_type() != NodeState::SubNode } {
                     break;
                 }
             }
@@ -897,7 +892,7 @@ pub fn get_successor(
 
         if !embedded {
             if ctx.current_container_offset as u32 + skipped_bytes >= ocx.get_root_container().size()
-                || unsafe { as_top_node(&mut (*successor_ptr).header).container_type() == 0 }
+                || unsafe { as_top_node(&mut (*successor_ptr).header).container_type() == NodeState::TopNode }
             {
                 return 0;
             }
@@ -908,7 +903,7 @@ pub fn get_successor(
                 return 0;
             }
 
-            if unsafe { as_top_node(&mut (*successor_ptr).header).container_type() == 0 } {
+            if unsafe { as_top_node(&mut (*successor_ptr).header).container_type() == NodeState::TopNode } {
                 return 0;
             }
         }
@@ -961,16 +956,15 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
 
         let mut expect: usize = 0;
         let base_offset: i32 = tmp_ctx.current_container_offset + jump_start as i32;
-        let mut scan_node: *mut NodeHeader = node_head.add(get_offset(node_head));
         tmp_ctx.header.set_last_sub_char_set(false);
         tmp_ctx.last_sub_char_seen = 0;
 
         loop {
             tmp_ctx.current_container_offset = base_offset + offset as i32;
             log_to_file(&format!("create_sublevel_jumptable set current container offset to {}", tmp_ctx.current_container_offset));
-            scan_node = (ocx.get_root_container_pointer() as *mut u8).add(tmp_ctx.current_container_offset as usize) as *mut NodeHeader;
+            let scan_node = (ocx.get_root_container_pointer() as *mut u8).add(tmp_ctx.current_container_offset as usize) as *mut NodeHeader;
 
-            if as_top_node(scan_node).container_type() == 1 {
+            if as_top_node(scan_node).container_type() == NodeState::SubNode {
                 let mut key: u8 = get_sub_node_key(scan_node as *mut Node, &mut tmp_ctx, false);
                 log_to_file(&format!("found key {}", key));
 
@@ -1025,7 +1019,7 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
                 update_space_usage(shift_by as i16, ocx, &mut tmp_ctx);
 
                 as_sub_node_mut(scan_node).set_type_flag(InnerNode);
-                as_sub_node_mut(scan_node).set_container_type(1);
+                as_sub_node_mut(scan_node).set_container_type(NodeState::SubNode);
 
                 if !first_insert_is_relative {
                     *((scan_node as *mut u8).add(1)) = diff;
@@ -1040,9 +1034,9 @@ pub fn create_sublevel_jumptable(mut node_head: *mut NodeHeader, ocx: &mut Opera
                 expect += 1;
 
                 while expect < SUBLEVEL_JUMPTABLE_ENTRIES {
-                    scan_node = (ocx.get_root_container_pointer() as *mut u8).add(base_offset as usize + offset) as *mut NodeHeader;
+                    let scan_node = (ocx.get_root_container_pointer() as *mut u8).add(base_offset as usize + offset) as *mut NodeHeader;
                     as_sub_node_mut(scan_node).set_type_flag(InnerNode);
-                    as_sub_node_mut(scan_node).set_container_type(1);
+                    as_sub_node_mut(scan_node).set_container_type(NodeState::SubNode);
                     as_sub_node_mut(scan_node).set_delta(0);
                     let target_key = (scan_node as *mut u8).add(size_of::<NodeHeader>());
                     *target_key = JUMP_TABLE_KEYS[expect] - tmp_ctx.last_sub_char_seen;
@@ -1128,7 +1122,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
 
         let data_offset: *mut u8 =
             unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ocx.get_root_container().get_container_head_size() as usize) };
-        let mut consumed_newcon: usize = 0;
+        let consumed_newcon: usize;
         assert!(pc_key_len > 0);
 
         let top: *mut NodeHeader = data_offset as *mut NodeHeader;
@@ -1155,7 +1149,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             }
         } else if pc_key_len == 2 {
             let sub: *mut NodeHeader = unsafe { data_offset.add(size_of::<NodeHeader>() + 1) as *mut NodeHeader };
-            as_sub_node_mut(sub).set_container_type(1);
+            as_sub_node_mut(sub).set_container_type(NodeState::SubNode);
             unsafe {
                 copy_nonoverlapping(ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(1), (sub as *mut u8).add(size_of::<NodeHeader>()), 1);
             }
@@ -1176,7 +1170,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             }
         } else {
             let mut sub: *mut NodeHeader = unsafe { data_offset.add(size_of::<NodeHeader>() + 1) as *mut NodeHeader };
-            as_sub_node_mut(sub).set_container_type(1);
+            as_sub_node_mut(sub).set_container_type(NodeState::SubNode);
             as_sub_node_mut(sub).set_type_flag(InnerNode);
             unsafe {
                 copy_nonoverlapping(ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(1), (sub as *mut u8).add(size_of::<NodeHeader>()), 1);
@@ -1310,7 +1304,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
 
                 let embedded_sub: *mut NodeHeader = embedded_top.add(size_of::<NodeHeader>() + 1);
                 write_bytes(embedded_sub as *mut u8, 0, 1);
-                as_sub_node_mut(embedded_sub).set_container_type(1);
+                as_sub_node_mut(embedded_sub).set_container_type(NodeState::SubNode);
 
                 if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
                     as_sub_node_mut(embedded_sub).set_type_flag(LeafNodeWithValue);
@@ -1371,7 +1365,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
 
                 let embedded_sub: *mut NodeHeader = embedded_top.add(size_of::<NodeHeader>() + 1);
                 write_bytes(embedded_sub as *mut u8, 0, 1);
-                as_sub_node_mut(embedded_sub).set_container_type(1);
+                as_sub_node_mut(embedded_sub).set_container_type(NodeState::SubNode);
                 as_sub_node_mut(embedded_sub).set_type_flag(InnerNode);
                 copy_nonoverlapping(
                     ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(1),
@@ -1446,7 +1440,7 @@ pub fn inject_sublevel_reference_key(node_head: *mut NodeHeader, ocx: &mut Opera
         copy(node_head as *mut u8, target, bytes_to_move as usize);
         write_bytes(node_head as *mut u8, 0, size_of::<NodeHeader>() + 1 - relative as usize);
         as_top_node_mut(node_head).set_type_flag(InnerNode);
-        as_top_node_mut(node_head).set_container_type(1);
+        as_top_node_mut(node_head).set_container_type(NodeState::SubNode);
     }
 
     update_space_usage(size_of::<NodeHeader>() as i16 + 1 - relative as i16, ocx, ctx);
@@ -1460,7 +1454,7 @@ pub fn inject_sublevel_reference_key(node_head: *mut NodeHeader, ocx: &mut Opera
         let skipped: u32 = get_successor(node_head, &mut successor, ocx, ctx, false);
 
         if skipped > 0 {
-            assert_eq!(unsafe { as_top_node(&mut (*(successor.expect(ERR_NO_SUCCESSOR))).header as *mut NodeHeader).container_type() }, 1);
+            assert_eq!(unsafe { as_top_node(&mut (*(successor.expect(ERR_NO_SUCCESSOR))).header as *mut NodeHeader).container_type() }, NodeState::SubNode);
             let succ_delta: u8;
             unsafe {
                 let successor_ptr: *mut Node = successor.expect(ERR_NO_SUCCESSOR);

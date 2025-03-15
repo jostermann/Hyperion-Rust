@@ -59,9 +59,10 @@ impl Metabin {
     }
 
     pub(crate) fn teardown(&mut self, size: usize) {
-        for i in 0..METABIN_ELEMENTS {
+        self.bins.iter_mut().for_each(|bin| bin.teardown(size));
+        /*for i in 0..METABIN_ELEMENTS {
             self.bins[i].teardown(size);
-        }
+        }*/
     }
 
     pub(crate) fn set_bin_as_unused(&mut self, bin_id: usize, chunk_id: usize) {

@@ -159,20 +159,14 @@ impl Bin {
     /// Returns `true`, if the allocation was successful.
     /// Returns `false`, otherwise.
     pub(crate) fn allocate_chunk_unchained(&mut self, hyperion_pointer: &mut HyperionPointer) -> bool {
-        let c = self.new_chunk_allocation_space_available();
-        let can = c.unwrap();
-        self.toggle_chunk_usage(can as usize);
-        hyperion_pointer.set_chunk_id(can as u16);
-        self.header.set_chance2nd_alloc(0);
-        true
-        /*self.new_chunk_allocation_space_available()
+        self.new_chunk_allocation_space_available()
             .map(|candidate| {
                 self.toggle_chunk_usage(candidate as usize);
                 hyperion_pointer.set_chunk_id(candidate as u16);
                 self.header.set_chance2nd_alloc(0);
                 true
             })
-            .unwrap_or(false)*/
+            .unwrap_or(false)
     }
 
     /// Allocates 8 consecutive stored chunks.Updates the given `HyperionPointer` to point
@@ -192,14 +186,6 @@ impl Bin {
                 return true;
             }
         }
-        /*for (i, byte) in self.chunk_usage_mask.iter_mut().take(1).enumerate() {
-            if *byte == 255 {
-                *byte = 0;
-                hyperion_pointer.set_chunk_id(i as u16 * 8);
-                self.header.set_chance2nd_alloc(0);
-                return true;
-            }
-        }*/
         false
     }
 

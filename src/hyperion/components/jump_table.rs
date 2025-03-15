@@ -14,7 +14,7 @@ pub struct TopNodeJumpTable {
 #[bitfield(u32)]
 pub struct SubNodeJumpTableEntry {
     #[bits(24)]
-    pub offset: u32,
+    pub offset: usize,
 
     #[bits(8)]
     pub key: u8,

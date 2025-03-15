@@ -70,9 +70,7 @@ impl ArenaInner {
     }
 
     pub(crate) fn teardown_all_superbins(&mut self) {
-        for i in 0..SUPERBLOCK_ARRAY_MAXSIZE {
-            self.teardown_superblock(i as u16);
-        }
+        (0..SUPERBLOCK_ARRAY_MAXSIZE).for_each(|i| self.teardown_superblock(i as u16));
     }
 
     pub(crate) fn teardown_superblock(&mut self, index: u16) {

@@ -10,7 +10,7 @@ use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPo
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 use spin::RwLock;
 use std::ffi::c_void;
-use std::ptr::{copy, null_mut, write_bytes};
+use std::ptr::{copy, copy_nonoverlapping, null_mut, write_bytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const INCREMENT_SIZE_EXT: usize = 4096;
@@ -231,7 +231,7 @@ fn reallocate_hyperion_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
     let new_data: *mut c_void = get_chunk(arena, &mut new_pointer, 1, 0);
     let allocation_size: u16 = arena.get_superbin_ref(hyperion_pointer).get_datablock_size();
     unsafe {
-        copy(old_data as *const u8, new_data as *mut u8, allocation_size.min(size as u16) as usize);
+        copy_nonoverlapping(old_data as *const u8, new_data as *mut u8, allocation_size.min(size as u16) as usize);
         /*memcpy(
             new_data,
             old_data,

@@ -178,11 +178,14 @@ impl Superbin {
 }
 
 pub(crate) fn get_sblock_id(size: u32) -> u8 {
-    if size <= (63 * INCREMENT_SIZE) as u32 {
+    (size > 0 && size <= (63 * INCREMENT_SIZE) as u32)
+        .then(|| (((size - 1) / INCREMENT_SIZE as u32) + 1) as u8)
+        .unwrap_or(0)
+    /*if size <= (63 * INCREMENT_SIZE) as u32 {
         (((size - 1) / INCREMENT_SIZE as u32) + 1) as u8
     } else {
         0
-    }
+    }*/
 }
 
 #[cfg(test)]

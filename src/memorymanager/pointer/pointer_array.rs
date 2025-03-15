@@ -64,7 +64,7 @@ impl PointerArray {
     /// Returns `None`, if no metabin is stored at that index or if the index
     /// is out of bounds.
     pub(crate) fn get(&self, index: usize) -> Option<&Metabin> {
-        self.array.get(index)?.as_ref().map(|b: &Box<Metabin>| b.as_ref())
+        self.array.get(index)?.as_ref().map(|b| b.as_ref())
     }
 
     /// Returns a mutable reference to the metabin stored at the given index.

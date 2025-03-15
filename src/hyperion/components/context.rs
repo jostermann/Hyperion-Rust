@@ -49,7 +49,7 @@ impl OperationCommand {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct TraversalContext {
-    pub offset: i32,
+    pub offset: usize,
     pub hyperion_pointer: HyperionPointer,
 }
 
@@ -93,8 +93,8 @@ pub struct ContainerTraversalContext {
     pub header: ContainerTraversalHeader,
     pub last_top_char_seen: u8,
     pub last_sub_char_seen: u8,
-    pub current_container_offset: i32,
-    pub safe_offset: i32,
+    pub current_container_offset: usize,
+    pub safe_offset: usize,
     pub first_char: u8,
     pub second_char: u8,
 }

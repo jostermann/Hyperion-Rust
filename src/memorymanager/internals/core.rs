@@ -1,7 +1,7 @@
 use crate::memorymanager::components::arena::{ArenaInner, NUM_ARENAS};
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED};
 use crate::memorymanager::components::metabin::Metabin;
-use crate::memorymanager::components::superbin::{get_sblock_id, Superbin};
+use crate::memorymanager::components::superbin::{get_superbin_id, Superbin};
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, auto_reallocate_memory, AllocatedBy};
 use crate::memorymanager::internals::compression::{compress_arena, decompress_bin, decompress_extended, CompressionState};
 use crate::memorymanager::internals::simd_common::apply_index_search;
@@ -57,7 +57,6 @@ pub fn get_chunk_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hyperion
     arena.get_bin_ref(hyperion_pointer).chunks.add_get(offset)
 }
 
-// ehemals ohm_getpointer
 #[allow(unreachable_code, dead_code, unused_variables)]
 pub fn get_chunk(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer, might_increment: i32, needed_character: u8) -> *mut c_void {
     if hyperion_pointer.is_extended_pointer() {
@@ -137,7 +136,7 @@ pub fn get_chained_pointer(extended_hyperion_pointer: &mut ExtendedHyperionPoint
 }
 
 pub fn get_new_pointer(arena: &mut ArenaInner, size: usize, chained_counter: i32) -> HyperionPointer {
-    let superbin_id: u8 = get_sblock_id(size as u32);
+    let superbin_id: u8 = get_superbin_id(size as u32);
     let mut new_hyperion_pointer: HyperionPointer = HyperionPointer::default();
     new_hyperion_pointer.set_superbin_id(superbin_id);
 
@@ -222,7 +221,7 @@ pub fn reallocate_from_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
 }
 
 fn reallocate_hyperion_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer, size: usize) -> HyperionPointer {
-    if get_sblock_id(size as u32) == hyperion_pointer.superbin_id() {
+    if get_superbin_id(size as u32) == hyperion_pointer.superbin_id() {
         return *hyperion_pointer;
     }
 
@@ -250,7 +249,7 @@ fn reallocate_extended_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
     let chained_pointer_cnt: u8 =
         arena.get_bin_ref(hyperion_pointer).get_extended_pointer_to_bin_ref(hyperion_pointer).header.chained_pointer_count();
 
-    let reallocation_strategy: ReallocationStrategy = if chained_pointer_cnt > 0 || get_sblock_id(size as u32) == 0 {
+    let reallocation_strategy: ReallocationStrategy = if chained_pointer_cnt > 0 || get_superbin_id(size as u32) == 0 {
         ReallocationStrategy::StayExtended
     } else {
         ReallocationStrategy::ReallocateToNormal

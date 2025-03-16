@@ -58,10 +58,6 @@ impl HyperionPointer {
         Self::default()
     }
 
-    // pub fn default() -> Self {
-    // Self::default()
-    // }
-
     pub fn with_superbin_id(mut self, value: u8) -> Self {
         self.set_superbin_id(value);
         self

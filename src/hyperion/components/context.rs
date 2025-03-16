@@ -4,14 +4,15 @@ use crate::hyperion::components::context::TraversalType::{
     FilledTwoCharSubNodeInFirstCharScope, FilledTwoCharTopNode, FilledTwoCharTopNodeInFirstCharScope, InvalidTraversal,
 };
 use crate::hyperion::components::node::{NodeState, NodeValue};
-use crate::hyperion::components::node_header::{NodeHeader, PathCompressedNodeHeader};
+use crate::hyperion::components::node_header::{NodeHeader};
 use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
 use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
 use crate::memorymanager::api::{Arena, HyperionPointer};
 use bitfield_struct::bitfield;
 use std::ptr::null_mut;
+use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeader;
 
-pub const KEY_DELTA_STATES: usize = 7;
+pub const DELTA_MAX_VALUE: u8 = 7;
 pub const SUBLEVEL_JUMPTABLE_HWM: usize = 16;
 pub const TOPLEVEL_JUMPTABLE_HWM: usize = 9;
 pub const TOPLEVEL_JUMPTABLE_INCREMENTS: usize = 7;
@@ -127,7 +128,7 @@ impl ContainerTraversalContext {
     pub fn key_delta_top(&mut self) -> u8 {
         self.header.last_top_char_set()
             .then(|| self.first_char - self.last_top_char_seen)
-            .filter(|&delta| (delta as usize) <= KEY_DELTA_STATES)
+            .filter(|&delta| delta <= DELTA_MAX_VALUE)
             .unwrap_or(0)
         /*(self.header.last_top_char_set() && ((self.first_char - self.last_top_char_seen) as usize) <= KEY_DELTA_STATES)
             .then_some(self.first_char - self.last_top_char_seen)
@@ -137,7 +138,7 @@ impl ContainerTraversalContext {
     pub fn key_delta_sub(&mut self) -> u8 {
         self.header.last_sub_char_set()
             .then(|| self.second_char - self.last_sub_char_seen)
-            .filter(|&delta| (delta as usize) <= KEY_DELTA_STATES)
+            .filter(|&delta| delta <= DELTA_MAX_VALUE)
             .unwrap_or(0)
         /*(self.header.last_sub_char_set() && ((self.second_char - self.last_sub_char_seen) as usize) <= KEY_DELTA_STATES)
             .then_some(self.second_char - self.last_top_char_seen)
@@ -156,7 +157,7 @@ pub struct PathCompressedEjectionContext {
 impl Default for PathCompressedEjectionContext {
     fn default() -> Self {
         Self {
-            node_value: NodeValue { v: 0 },
+            node_value: NodeValue { value: 0 },
             partial_key: [0; 127],
             pec_valid: false,
             path_compressed_node_header: PathCompressedNodeHeader::default(),

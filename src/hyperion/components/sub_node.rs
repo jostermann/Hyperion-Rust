@@ -2,12 +2,17 @@ use bitfield_struct::bitfield;
 
 use crate::hyperion::components::node::{NodeState, NodeType};
 
+/// Stores all child link types possible.
 #[derive(Debug, PartialOrd, PartialEq, Eq, Ord)]
 pub enum ChildLinkType {
+    /// The corresponding node is not linked and is either a lead node or currently "free floating" in memory.
     None = 0,
+    /// The corresponding node is followed by a hyperion pointer to the child container.
     Link = 1,
+    /// The corresponding node is followed by an embedded container.
     EmbeddedContainer = 2,
-    PathCompressed = 3
+    /// The child node is path compressed.
+    PathCompressed = 3,
 }
 
 impl ChildLinkType {
@@ -26,35 +31,44 @@ impl ChildLinkType {
             1 => ChildLinkType::Link,
             2 => ChildLinkType::EmbeddedContainer,
             3 => ChildLinkType::PathCompressed,
-            _ => panic!("Use of undefined link type")
+            _ => panic!("Use of undefined link type"),
         }
     }
 }
 
+/// The bitfield representing a top node header.
 #[bitfield(u8)]
 pub struct SubNode {
+    /// See [`NodeType`]
     #[bits(2)]
     pub type_flag: NodeType,
 
+    /// The header type of this node, see [`NodeState`]
     #[bits(1)]
     pub container_type: NodeState,
 
+    /// The stored delta encoding if this node. If `delta == 0`, the next 8 bits are the stored key. If `delta != 0`, the key is calculated
+    /// in respect to the predecessor key. In that case, the node does not store the key explicitly.
     #[bits(3)]
     pub delta: u8,
 
+    /// Stores information about which child link type is used.
     #[bits(2)]
-    pub child_container: ChildLinkType
+    pub child_container: ChildLinkType,
 }
 
 impl SubNode {
+    /// Returns, if this node is delta encoded.
     pub fn has_delta(&self) -> bool {
         self.delta() != 0
     }
 
+    /// Returns, if this node is a top node.
     pub fn is_top_node(&self) -> bool {
         self.container_type() == NodeState::TopNode
     }
 
+    /// Returns, if this node is a sub node.
     pub fn is_sub_node(&self) -> bool {
         self.container_type() == NodeState::SubNode
     }

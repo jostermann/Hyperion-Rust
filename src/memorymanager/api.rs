@@ -134,13 +134,9 @@ pub fn get_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPoi
                 let target_size = roundup(size);
                 (*char_entry).header.set_alloced_by(AllocatedBy::Heap);
                 (*char_entry).data.store(allocate_heap(target_size));
-                //(*char_entry).header.set_alloced_by(auto_allocate_memory(&mut (*char_entry).data, target_size));
                 (*char_entry).set_flags(size as i32, (target_size - size) as i16, 0, 0, CompressionState::NONE, offset as u8);
             } else {
-                while offset >= 0 {
-                    if (*char_entry).data.is_notnull() {
-                        break;
-                    }
+                while offset >= 0 && (*char_entry).data.is_null() {
                     char_entry = char_entry.sub(1);
                     offset -= 1;
                 }

@@ -1,7 +1,7 @@
 use crate::hyperion::components::container::{RootContainerArray, RootContainerEntry, RootContainerEntryInner, RootContainerStats, ROOT_NODES};
 use crate::hyperion::components::node::NodeValue;
 use crate::hyperion::components::return_codes::ReturnCode;
-use crate::hyperion::internals::atomic_pointer::initialize_container;
+use crate::hyperion::components::container::initialize_container;
 use crate::hyperion::internals::core::{int_get, int_put, GLOBAL_CONFIG};
 use crate::memorymanager::api::{get_next_arena, initialize, teardown};
 use once_cell::sync::Lazy;

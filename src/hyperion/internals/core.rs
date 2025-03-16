@@ -1,10 +1,10 @@
 use crate::hyperion::components::container::{get_container_head_size, shift_container, Container, ContainerLink, EmbeddedContainer, RootContainerEntry, RootContainerEntryInner, CONTAINER_MAX_EMBEDDED_DEPTH};
 use crate::hyperion::components::context::OperationCommand::{Delete, Get, Put};
 use crate::hyperion::components::context::{ContainerTraversalContext, ContainerTraversalHeader, EmbeddedTraversalContext, OperationCommand, RangeQueryContext, TraversalContext, TraversalType};
-use crate::hyperion::components::jump_table::{SubNodeJumpTableEntry, TOPLEVEL_NODE_JUMP_HWM};
+use crate::hyperion::components::jump_table::{ContainerJumpTableEntry, TOPLEVEL_NODE_JUMP_HWM};
 use crate::hyperion::components::node::NodeType::{Invalid, LeafNodeWithValue};
 use crate::hyperion::components::node::{get_sub_node_key, get_top_node_key, Node, NodeState, NodeValue};
-use crate::hyperion::components::node_header::{as_raw_compressed_mut, as_sub_node, as_sub_node_mut, as_top_node, as_top_node_mut, call_sub_node, call_top_node, compare_path_compressed_node, delete_node, get_child_container_pointer, get_jump_value, get_node_value, get_offset_child_container, get_offset_jump, get_offset_sub_node, get_offset_sub_node_delta, get_offset_top_node, get_offset_top_node_delta, get_offset_top_node_nondelta, get_successor, use_sub_node_jump_table, NodeHeader, PathCompressedNodeHeader};
+use crate::hyperion::components::node_header::{as_raw_compressed_mut, as_sub_node, as_sub_node_mut, as_top_node, as_top_node_mut, call_sub_node, call_top_node, compare_path_compressed_node, delete_node, get_child_container_pointer, get_jump_successor_value, get_node_value, get_offset_child_container, get_offset_jump_successor, get_offset_sub_node, get_offset_sub_node_delta, get_offset_top_node, get_offset_top_node_delta, get_offset_top_node_non_delta, get_successor, get_destination_from_top_node_jump_table, NodeHeader};
 use crate::hyperion::components::operation_context::initialize_data_for_scan;
 use crate::hyperion::components::operation_context::ContainerValidTypes::ContainerValid;
 use crate::hyperion::components::operation_context::JumpStates::{JumpPoint1, JumpPoint2, NoJump};
@@ -16,7 +16,7 @@ use crate::hyperion::components::return_codes::ReturnCode::{GetFailureNoNode, Ke
 use crate::hyperion::components::sub_node::ChildLinkType;
 use crate::hyperion::components::sub_node::ChildLinkType::{Link, PathCompressed};
 use crate::hyperion::components::top_node::TopNode;
-use crate::hyperion::internals::atomic_pointer::CONTAINER_SIZE_TYPE_0;
+use crate::hyperion::components::container::DEFAULT_CONTAINER_SIZE;
 use crate::hyperion::preprocessor::key_preprocessor::KeyProcessingIDs;
 use crate::memorymanager::api::{free, get_all_chained_pointer, get_chained_pointer, get_pointer, is_chained_pointer, malloc, malloc_chained, reallocate, register_chained_memory, Arena, HyperionPointer, SegmentChain, CONTAINER_MAX_SPLITS, CONTAINER_SPLIT_BITS};
 use bitfield_struct::bitfield;
@@ -80,9 +80,9 @@ pub fn get_global_cfg() -> *mut GlobalConfiguration {
 pub fn initialize_ejected_container(arena: &mut Arena, required_size: u32) -> HyperionPointer {
     let container_size_increment = GLOBAL_CONFIG.read().header.container_size_increment();
     let target_size: usize =
-        (((required_size as usize - CONTAINER_SIZE_TYPE_0 + get_container_head_size()) / container_size_increment as usize) + 1)
+        (((required_size as usize - DEFAULT_CONTAINER_SIZE + get_container_head_size()) / container_size_increment as usize) + 1)
             * container_size_increment as usize
-            + CONTAINER_SIZE_TYPE_0;
+            + DEFAULT_CONTAINER_SIZE;
     log_to_file(&format!("initialize_ejected_container: target size: {}", target_size));
     let mut pointer: HyperionPointer = malloc(arena, target_size);
     let container: *mut Container = get_pointer(arena, &mut pointer, 1, 0) as *mut Container;
@@ -103,7 +103,7 @@ fn should_delay_split(ocx: &mut OperationContext) -> bool {
     false
 }
 
-fn get_jump_table_data(ocx: &mut OperationContext) -> (*mut SubNodeJumpTableEntry, u8) {
+fn get_jump_table_data(ocx: &mut OperationContext) -> (*mut ContainerJumpTableEntry, u8) {
     let jump_table_entry = ocx.get_root_container().get_jump_table_pointer();
     let jump_table_size = ocx.get_root_container().get_jump_table_entry_count();
     let key_max = unsafe { (*(jump_table_entry.add(jump_table_size - 1))).key() };
@@ -112,7 +112,7 @@ fn get_jump_table_data(ocx: &mut OperationContext) -> (*mut SubNodeJumpTableEntr
 
 fn get_first_node_stored_value(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> u8 {
     let p_first = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut Node };
-    unsafe { (*p_first).stored_value }
+    unsafe { (*p_first).key }
 }
 
 fn should_abort_split(ocx: &mut OperationContext, left_init_char: u8, key_max: u8, diff: u8) -> bool {
@@ -133,7 +133,7 @@ fn should_abort_split(ocx: &mut OperationContext, left_init_char: u8, key_max: u
     false
 }
 
-fn compute_right_init_char(ocx: &mut OperationContext, jump_table_entry: *mut SubNodeJumpTableEntry, key_max: u8) -> u16 {
+fn compute_right_init_char(ocx: &mut OperationContext, jump_table_entry: *mut ContainerJumpTableEntry, key_max: u8) -> u16 {
     let jump_table_size = ocx.get_root_container().get_jump_table_entry_count();
     let mut right_init_char = unsafe {
         (((*(jump_table_entry.add(jump_table_size / 2))).key() as u16 >> (8 - CONTAINER_SPLIT_BITS)) + 1) * (256 / CONTAINER_MAX_SPLITS) as u16
@@ -151,7 +151,7 @@ fn find_split_position(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
     let mut node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
     let mut node_cache = Node {
         header: NodeHeader::new_top_node(TopNode::default()),
-        stored_value: 0,
+        key: 0,
     };
     let mut p_successor = Some(&mut node_cache as *mut Node);
     let mut previous: *mut NodeHeader = null_mut();
@@ -277,9 +277,9 @@ pub fn split_container(ocx: &mut OperationContext) -> bool {
         if as_top_node(previous).jump_successor_present() {
             let previous_offset = (previous as *mut u8).offset_from(src);
             let new_previous = left_target.add(previous_offset as usize) as *mut NodeHeader;
-            let succ_jump = (new_previous as *mut u8).add(get_offset_jump(new_previous));
+            let succ_jump = (new_previous as *mut u8).add(get_offset_jump_successor(new_previous));
             let jump_size = read_unaligned(succ_jump as *const u16);
-            let shift_amount = jump_size as usize - (size_of::<u16>() + get_offset_jump(new_previous));
+            let shift_amount = jump_size as usize - (size_of::<u16>() + get_offset_jump_successor(new_previous));
             copy(succ_jump.add(size_of::<u16>()), succ_jump, shift_amount);
             write_bytes(succ_jump.add(shift_amount), 0, size_of::<u16>());
             data_size -= size_of::<u16>();
@@ -317,13 +317,13 @@ pub fn split_container(ocx: &mut OperationContext) -> bool {
         assert_ne!(as_top_node(&mut (*node).header as *mut NodeHeader).type_flag(), Invalid);
 
         if as_top_node(&mut (*node).header as *mut NodeHeader).delta() == 0 {
-            (*node).stored_value = ctx.last_top_char_seen;
+            (*node).key = ctx.last_top_char_seen;
             copy_nonoverlapping(node as *mut u8, right_target, second_size as usize);
         } else {
             as_top_node_mut(&mut (*node).header as *mut NodeHeader).set_delta(0);
             let target_node = right_target as *mut Node;
             copy_nonoverlapping(node as *mut u8, target_node as *mut u8, 1);
-            (*target_node).stored_value = ctx.last_top_char_seen;
+            (*target_node).key = ctx.last_top_char_seen;
 
             right_target = right_target.add(2);
             src = src.add(1);
@@ -604,7 +604,7 @@ fn scan_meta_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalCont
                 match key.cmp(&ctx.first_char) {
                     Ordering::Less => {
                         if as_top_node(node_head).jump_successor_present() {
-                            ctx.current_container_offset += get_jump_value(node_head);
+                            ctx.current_container_offset += get_jump_successor_value(node_head);
                         } else {
                             ctx.current_container_offset += get_offset_top_node(node_head);
                         }
@@ -690,7 +690,7 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
                 ocx.jump_context.top_node_key = get_top_node_key(node_head as *mut Node, ctx) as i32;
                 topnodes_seen -= 1;
 
-                if topnodes_seen == 0 && (ocx.get_root_container().size() > (CONTAINER_SIZE_TYPE_0 as u32 * 4)) {
+                if topnodes_seen == 0 && (ocx.get_root_container().size() > (DEFAULT_CONTAINER_SIZE as u32 * 4)) {
                     ocx.flush_jump_table_sub_context();
                     insert_top_level_jump_table(ocx, ctx);
                     ctx.flush();
@@ -711,7 +711,7 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
                         ctx.last_top_char_seen = ocx.jump_context.top_node_key as u8;
 
                         if as_top_node(node_head).jump_successor_present() {
-                            ctx.current_container_offset += get_jump_value(node_head);
+                            ctx.current_container_offset += get_jump_successor_value(node_head);
                             node_head = unsafe {
                                 (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader
                             };
@@ -724,7 +724,7 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
                     },
                     Ordering::Equal => {
                         if as_top_node(node_head).jump_table_present() {
-                            let destination = use_sub_node_jump_table(node_head, ctx);
+                            let destination = get_destination_from_top_node_jump_table(node_head, ctx);
                             return scan_meta_phase2(ocx, ctx, node_head_ptr, destination);
                         }
                         ctx.current_container_offset += get_offset_top_node(node_head);
@@ -805,7 +805,7 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
                     assert_eq!(return_code, OK);
                     ocx.embedded_traversal_context.next_embedded_container_offset = ctx.current_container_offset as i32;
 
-                    if (ocx.get_root_container().size() as usize) <= 2 * CONTAINER_SIZE_TYPE_0 && ocx.header.next_container_valid() == ContainerValid
+                    if (ocx.get_root_container().size() as usize) <= 2 * DEFAULT_CONTAINER_SIZE && ocx.header.next_container_valid() == ContainerValid
                     {
                         if ocx.container_injection_context.root_container.is_some()
                             && ((ocx.get_root_container().size() as i32
@@ -961,7 +961,7 @@ pub fn inject_container(ocx: &mut OperationContext) {
                 unsafe { to_copy = to_copy.add(diff) };
                 // copied previous nodes
                 // now copy node with jump data
-                diff = get_offset_jump(embed_node);
+                diff = get_offset_jump_successor(embed_node);
                 unsafe {
                     copy_nonoverlapping(to_copy as *mut u8, tmp_cache as *mut u8, diff);
                 }
@@ -1172,11 +1172,11 @@ pub fn perform_container_injection(
 
         let old_free = unsafe { *ocx.get_injection_context().root_container.unwrap() }.free_bytes() as i32;
         let mut new_size = (((unsafe { *ocx.get_injection_context().root_container.unwrap() }.size() as i32) + base_container_delta - old_free)
-            / CONTAINER_SIZE_TYPE_0 as i32)
-            * CONTAINER_SIZE_TYPE_0 as i32;
+            / DEFAULT_CONTAINER_SIZE as i32)
+            * DEFAULT_CONTAINER_SIZE as i32;
 
         if new_size <= ((unsafe { *ocx.get_injection_context().root_container.unwrap() }.size() as i32) + base_container_delta - old_free) {
-            new_size += CONTAINER_SIZE_TYPE_0 as i32;
+            new_size += DEFAULT_CONTAINER_SIZE as i32;
         }
 
         let delta = new_size - ocx.get_injection_root_container().size() as i32;
@@ -1224,7 +1224,7 @@ pub fn perform_container_injection(
 
     if toplevel_offset != 0 {
         topnode_succ_jump = unsafe { (ocx.get_injection_root_container_pointer() as *mut u8).add(toplevel_offset as usize) as *mut NodeHeader };
-        let jump_val = unsafe { (topnode_succ_jump as *mut u8).add(get_offset_jump(topnode_succ_jump)) as *mut u16 };
+        let jump_val = unsafe { (topnode_succ_jump as *mut u8).add(get_offset_jump_successor(topnode_succ_jump)) as *mut u16 };
         unsafe {
             *jump_val += base_container_delta as u16;
         }
@@ -1580,7 +1580,7 @@ pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, 
                 if !call_top_node(node_head, rqc, cb) {
                     return OK;
                 }
-                embedded_offset += get_offset_top_node_nondelta(node_head);
+                embedded_offset += get_offset_top_node_non_delta(node_head);
             }
             else {
                 unsafe { *top += as_top_node(node_head).delta(); }
@@ -1592,7 +1592,7 @@ pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, 
                 if !call_top_node(node_head, rqc, cb) {
                     return OK;
                 }
-                embedded_offset += get_offset_top_node_nondelta(node_head);
+                embedded_offset += get_offset_top_node_non_delta(node_head);
             }
             unsafe { *sub = 0; }
         }
@@ -2053,6 +2053,7 @@ pub fn remove(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, 
 use std::io::Write;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeader;
 
 const LOG: bool = false;
 static FD: AtomicUsize = AtomicUsize::new(0);

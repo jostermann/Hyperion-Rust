@@ -1,28 +1,29 @@
-use std::ops::DerefMut;
-
-use bitfield_struct::bitfield;
-
-use crate::hyperion::components::container::{Container, EmbeddedContainer, RootContainerEntry, CONTAINER_MAX_EMBEDDED_DEPTH};
-use crate::hyperion::components::node::NodeValue;
-use crate::hyperion::components::node_header::PathCompressedNodeHeader;
-use crate::hyperion::internals::atomic_pointer::{AtomicArena,
-                                                 AtomicChar,
-                                                 AtomicContainer,
-                                                 AtomicEmbContainer,
-                                                 AtomicHeader,
-                                                 AtomicHyperionPointer,
-                                                 AtomicNodeValue,
-                                                 AtomicPCContext,
-                                                 AtomicRootEntry,
-                                                 Atomicu8};
+use crate::hyperion::components::container::{Container, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH};
+use crate::hyperion::components::context::TraversalType::{
+    EmptyOneCharTopNode, EmptyTwoCharTopNode, EmptyTwoCharTopNodeInFirstCharScope, FilledOneCharSubNode, FilledOneCharTopNode, FilledTwoCharSubNode,
+    FilledTwoCharSubNodeInFirstCharScope, FilledTwoCharTopNode, FilledTwoCharTopNodeInFirstCharScope, InvalidTraversal,
+};
+use crate::hyperion::components::node::{NodeState, NodeValue};
+use crate::hyperion::components::node_header::NodeHeader;
+use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeader;
+use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
+use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
 use crate::memorymanager::api::{Arena, HyperionPointer};
+use bitfield_struct::bitfield;
+use std::ptr::null_mut;
 
-#[derive(Debug)]
+pub const DELTA_MAX_VALUE: u8 = 7;
+pub const TOP_NODE_JUMP_TABLE_HWM: usize = 16;
+pub const TOPLEVEL_JUMPTABLE_HWM: usize = 9;
+pub const MAX_CONTAINER_JUMP_TABLES: usize = 7;
+pub const TOPLEVEL_AGGRESSIVE_GROWTH__HWM: usize = 5;
+
+#[derive(Debug, PartialEq)]
 pub enum OperationCommand {
     Put = 0,
     Get = 1,
     Range = 2,
-    Delete = 3
+    Delete = 3,
 }
 
 impl OperationCommand {
@@ -41,45 +42,62 @@ impl OperationCommand {
             1 => OperationCommand::Get,
             2 => OperationCommand::Range,
             3 => OperationCommand::Delete,
-            _ => panic!("Use of undefined operation type")
+            _ => panic!("Use of undefined operation type"),
         }
     }
 }
 
-#[repr(packed)]
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct TraversalContext {
-    pub offset: i32,
-    pub hyperion_pointer: HyperionPointer
+    pub offset: usize,
+    pub hyperion_pointer: HyperionPointer,
 }
 
-#[bitfield(u8, order = Msb)]
+#[derive(Debug, PartialEq)]
+pub enum TraversalType {
+    EmptyOneCharTopNode,                  // 0
+    FilledOneCharTopNode,                 // 1
+    EmptyTwoCharTopNode,                  // 2
+    FilledTwoCharTopNode,                 // 3
+    EmptyTwoCharTopNodeInFirstCharScope,  // 6
+    FilledTwoCharTopNodeInFirstCharScope, // 7
+    FilledOneCharSubNode,                 // 9
+    FilledTwoCharSubNode,                 // 11
+    FilledTwoCharSubNodeInFirstCharScope, // 15
+    InvalidTraversal,
+}
+
+#[bitfield(u8)]
 pub struct ContainerTraversalHeader {
     #[bits(1)]
     pub node_type: u8,
     #[bits(1)]
-    pub two_chars: u8,
+    pub two_chars: bool,
     #[bits(1)]
-    pub in_first_char_scope: u8,
+    pub in_first_char_scope: bool,
     #[bits(1)]
-    pub container_type: u8,
+    pub container_type: NodeState,
     #[bits(1)]
-    pub last_top_char_set: u8,
+    pub last_top_char_set: bool,
     #[bits(1)]
-    pub last_sub_char_set: u8,
+    pub last_sub_char_set: bool,
     #[bits(1)]
-    pub end_operation: u8,
+    pub end_operation: bool,
     #[bits(1)]
-    pub force_shift_before_insert: u8
+    pub force_shift_before_insert: bool,
 }
 
+#[derive(Default)]
+#[repr(C)]
 pub struct ContainerTraversalContext {
     pub header: ContainerTraversalHeader,
     pub last_top_char_seen: u8,
     pub last_sub_char_seen: u8,
-    pub current_container_offset: i32,
-    pub safe_offset: i32,
+    pub current_container_offset: usize,
+    pub max_offset: usize,
     pub first_char: u8,
-    pub second_char: u8
+    pub second_char: u8,
 }
 
 impl ContainerTraversalContext {
@@ -87,131 +105,142 @@ impl ContainerTraversalContext {
         self.last_top_char_seen = 0;
         self.last_sub_char_seen = 0;
         self.current_container_offset = 0;
-        self.header.set_in_first_char_scope(0);
+        self.header.set_in_first_char_scope(true);
+    }
+
+    pub fn as_combined_header(&mut self) -> TraversalType {
+        let bit_pattern: (NodeState, bool, bool, u8) =
+            (self.header.container_type(), self.header.in_first_char_scope(), self.header.two_chars(), self.header.node_type());
+        match bit_pattern {
+            (NodeState::TopNode, false, false, 0) => EmptyOneCharTopNode,
+            (NodeState::TopNode, false, false, 1) => FilledOneCharTopNode,
+            (NodeState::TopNode, false, true, 0) => EmptyTwoCharTopNode,
+            (NodeState::TopNode, false, true, 1) => FilledTwoCharTopNode,
+            (NodeState::TopNode, true, true, 0) => EmptyTwoCharTopNodeInFirstCharScope,
+            (NodeState::TopNode, true, true, 1) => FilledTwoCharTopNodeInFirstCharScope,
+            (NodeState::SubNode, false, false, 1) => FilledOneCharSubNode,
+            (NodeState::SubNode, false, true, 1) => FilledTwoCharSubNode,
+            (NodeState::SubNode, true, true, 1) => FilledTwoCharSubNodeInFirstCharScope,
+            _ => InvalidTraversal,
+        }
+    }
+
+    pub fn key_delta_top(&mut self) -> u8 {
+        self.header.last_top_char_set().then(|| self.first_char - self.last_top_char_seen).filter(|&delta| delta <= DELTA_MAX_VALUE).unwrap_or(0)
+    }
+
+    pub fn key_delta_sub(&mut self) -> u8 {
+        self.header.last_sub_char_set().then(|| self.second_char - self.last_sub_char_seen).filter(|&delta| delta <= DELTA_MAX_VALUE).unwrap_or(0)
     }
 }
 
+#[repr(C)]
 pub struct PathCompressedEjectionContext {
     pub node_value: NodeValue,
-    pub partial_key: [char; 127],
-    pub pec_valid: u8,
-    pub path_compressed_node_header: PathCompressedNodeHeader
+    pub partial_key: [u8; 127],
+    pub pec_valid: bool,
+    pub path_compressed_node_header: PathCompressedNodeHeader,
 }
 
+impl Default for PathCompressedEjectionContext {
+    fn default() -> Self {
+        Self {
+            node_value: NodeValue { value: 0 },
+            partial_key: [0; 127],
+            pec_valid: false,
+            path_compressed_node_header: PathCompressedNodeHeader::default(),
+        }
+    }
+}
+
+#[derive(Default)]
+#[repr(C)]
 pub struct ContainerInjectionContext {
-    pub root_container: AtomicContainer,
-    pub container_pointer: AtomicHyperionPointer
+    pub root_container: Option<*mut Container>,
+    pub container_pointer: Option<*mut HyperionPointer>,
 }
 
-pub struct EmbeddedTraversalContext<'a> {
-    pub root_container: &'a mut Container,
-    pub next_embedded_container: &'a mut EmbeddedContainer,
-    pub embedded_stack: [AtomicEmbContainer; CONTAINER_MAX_EMBEDDED_DEPTH],
+#[repr(C)]
+pub struct EmbeddedTraversalContext {
+    pub root_container: *mut Container,
+    pub next_embedded_container: Option<*mut EmbeddedContainer>,
+    pub embedded_stack: Option<[Option<AtomicEmbContainer>; CONTAINER_MAX_EMBEDDED_DEPTH]>,
     pub next_embedded_container_offset: i32,
     pub embedded_container_depth: i32,
-    pub root_container_pointer: &'a mut HyperionPointer
+    pub root_container_pointer: *mut HyperionPointer,
 }
 
+impl Default for EmbeddedTraversalContext {
+    fn default() -> Self {
+        EmbeddedTraversalContext {
+            root_container: null_mut(),
+            next_embedded_container: None,
+            embedded_stack: None,
+            next_embedded_container_offset: 0,
+            embedded_container_depth: 0,
+            root_container_pointer: null_mut(),
+        }
+    }
+}
+
+impl EmbeddedTraversalContext {
+    pub fn root_container(&mut self) -> &mut Container {
+        unsafe { self.root_container.as_mut().expect(ERR_NO_CAST_MUT_REF) }
+    }
+}
+
+#[derive(Default)]
+#[repr(C)]
 pub struct JumpTableSubContext {
-    pub top_node: AtomicHeader,
-    pub root_container_sub_char_set: u8,
-    pub root_container_sub_char: char
+    pub top_node: Option<*mut NodeHeader>,
+    pub root_container_sub_char_set: bool,
+    pub root_container_sub_char: u8,
 }
 
 impl JumpTableSubContext {
     pub fn flush(&mut self) {
-        self.top_node.clear();
-        self.root_container_sub_char = char::from(0);
-        self.root_container_sub_char_set = 0;
+        self.top_node = None;
+        self.root_container_sub_char = 0;
+        self.root_container_sub_char_set = false;
     }
 }
 
+#[derive(Default)]
+#[repr(C)]
 pub struct JumpContext {
-    pub predecessor: AtomicHeader,
+    pub predecessor: Option<*mut NodeHeader>,
     pub top_node_predecessor_offset_absolute: i32,
     pub sub_nodes_seen: i32,
-    pub top_node_key: i32
+    pub top_node_key: i32,
 }
 
 impl JumpContext {
     pub fn flush(&mut self) {
-        self.predecessor.clear();
+        self.predecessor = None;
         self.top_node_predecessor_offset_absolute = 0;
         self.sub_nodes_seen = 0;
         self.top_node_key = 0;
     }
+
+    pub fn duplicate(&mut self) -> JumpContext {
+        JumpContext {
+            predecessor: self.predecessor.as_mut().map(|predecessor: &mut *mut NodeHeader| *predecessor),
+            top_node_predecessor_offset_absolute: self.top_node_predecessor_offset_absolute,
+            sub_nodes_seen: self.sub_nodes_seen,
+            top_node_key: self.top_node_key,
+        }
+    }
 }
 
-pub struct RangeQueryContext<'a> {
-    pub key_begin: AtomicChar,
-    pub current_key: Atomicu8,
-    pub arena: &'a mut AtomicArena,
+#[repr(C)]
+pub struct RangeQueryContext {
+    pub key_begin: *mut u8,
+    pub current_key: *mut u8,
+    pub arena: *mut Arena,
     pub current_stack_depth: u16,
     pub current_key_offset: u16,
     pub key_len: u16,
     pub do_report: u8,
-    pub stack: [Option<TraversalContext>; 128]
-}
-
-#[bitfield(u8, order = Msb)]
-pub struct OperationContextHeader {
-    #[bits(2)]
-    pub command: OperationCommand,
-    #[bits(2)]
-    pub next_container_valid: u8,
-    #[bits(1)]
-    pub operation_done: u8,
-    #[bits(1)]
-    pub performed_put: u8,
-    #[bits(1)]
-    pub pathcompressed_child: u8,
-    #[bits(1)]
-    __: u8
-}
-
-pub struct OperationContext<'a> {
-    pub header: OperationContextHeader,
-    pub chained_pointer_hook: u8,
-    pub key_len_left: i32,
-    pub key: Option<AtomicChar>,
-    pub jump_context: Option<JumpContext>,
-    pub root_container_entry: Option<&'a mut RootContainerEntry>,
-    pub embedded_traversal_context: Option<EmbeddedTraversalContext<'a>>,
-    pub jump_table_sub_context: Option<JumpTableSubContext>,
-    pub next_container_pointer: Option<&'a mut HyperionPointer>,
-    pub arena: Option<&'a mut Arena>,
-    pub path_compressed_ejection_context: Option<PathCompressedEjectionContext>,
-    pub return_value: Option<&'a mut NodeValue>,
-    pub input_value: Option<&'a mut NodeValue>,
-    pub container_injection_context: Option<ContainerInjectionContext>
-}
-
-impl<'a> OperationContext<'a> {
-    pub fn flush_jump_context(&mut self) {
-        if let Some(jump_context) = &mut self.jump_context {
-            jump_context.flush();
-        }
-    }
-
-    pub fn flush_jump_table_sub_context(&mut self) {
-        if let Some(sub_context) = &mut self.jump_table_sub_context {
-            sub_context.flush();
-        }
-    }
-
-    pub fn get_return_value_mut(&mut self) -> &mut NodeValue {
-        self.return_value.as_deref_mut().unwrap()
-    }
-
-    pub fn get_input_value_mut(&mut self) -> &mut NodeValue {
-        self.input_value.as_deref_mut().unwrap()
-    }
-
-    pub fn get_jump_context_mut(&mut self) -> &mut JumpContext {
-        self.jump_context.as_mut().unwrap()
-    }
-
-    pub fn get_key_as_mut(&mut self) -> &mut AtomicChar {
-        self.key.as_mut().unwrap()
-    }
+    pub traversed_leaves: i32,
+    pub stack: [Option<TraversalContext>; 128],
 }

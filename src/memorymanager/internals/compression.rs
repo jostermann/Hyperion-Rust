@@ -29,7 +29,7 @@ pub(crate) const COMPRESSION_ATT_ZSTD: usize = 1;
 #[derive(Copy, Clone, Default)]
 pub(crate) struct CompressionSlidingWindow {
     metabin: u16,
-    superbin: u16
+    superbin: u16,
 }
 
 pub(crate) enum CompressionStrategy {
@@ -37,7 +37,7 @@ pub(crate) enum CompressionStrategy {
     DEFLATE,
     LZ4_0,
     LZ4_1,
-    ZSTD
+    ZSTD,
 }
 
 #[derive(Debug, PartialOrd, PartialEq)]
@@ -45,7 +45,7 @@ pub(crate) enum CompressionState {
     NONE = 0,
     DEFLATE = 1,
     LZ4 = 2,
-    ZSTD = 3
+    ZSTD = 3,
 }
 
 impl CompressionState {
@@ -61,7 +61,7 @@ impl CompressionState {
             3 => Self::ZSTD,
             _ => {
                 panic!("Use of undefined compression type")
-            }
+            },
         }
     }
 }
@@ -69,11 +69,11 @@ impl CompressionState {
 pub(crate) struct CompressedContainerHead {
     pub(crate) original_size: i32,
     pub(crate) compressed_size: i32,
-    original_compression_state: CompressionState
+    original_compression_state: CompressionState,
 }
 
 pub(crate) fn get_compression_strategy() -> CompressionStrategy {
-    let sys_rate: f64 = get_memory_stats(false).lock().unwrap().sys_rate;
+    let sys_rate: f64 = get_memory_stats(false).sys_rate;
 
     if sys_rate > COMPRESSION_LIMIT_S3 {
         CompressionStrategy::ZSTD
@@ -134,7 +134,7 @@ pub(crate) fn perform_bin_deflation(bin: &mut Bin, size: usize) {
 }
 
 pub(crate) fn deflate_bin(superbin: &mut Superbin, metabin: &mut Metabin) {
-    let size_of_bin = superbin.get_datablock_size();
+    let size_of_bin = superbin.get_data_size();
 
     for i in (0..255).rev() {
         let current_bin: &mut Bin = &mut metabin.bins[i];
@@ -145,7 +145,7 @@ pub(crate) fn deflate_bin(superbin: &mut Superbin, metabin: &mut Metabin) {
                     perform_bin_deflation(current_bin, size_of_bin as usize);
                 }
             },
-            _ => current_bin.header.set_chance2nd_alloc(1)
+            _ => current_bin.header.set_chance2nd_alloc(1),
         }
     }
 }
@@ -179,6 +179,6 @@ pub(crate) fn compress_arena(arena: &mut ArenaInner) -> bool {
     match compression_strategy {
         CompressionStrategy::NONE => false,
         CompressionStrategy::DEFLATE => perform_arena_deflation(arena),
-        _ => perform_arena_compression(arena, compression_strategy)
+        _ => perform_arena_compression(arena, compression_strategy),
     }
 }

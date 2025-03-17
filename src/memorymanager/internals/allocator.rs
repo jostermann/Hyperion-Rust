@@ -13,21 +13,10 @@ use std::panic::Location;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use libc::{calloc,
-           free,
-           malloc,
-           memcpy,
-           memset,
-           mmap,
-           munmap,
-           sysconf,
-           MAP_ANON,
-           MAP_FAILED,
-           MAP_NORESERVE,
-           MAP_PRIVATE,
-           PROT_READ,
-           PROT_WRITE,
-           _SC_PAGESIZE};
+use libc::{
+    calloc, free, malloc, memcpy, memset, mmap, munmap, sysconf, MAP_ANON, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE,
+    _SC_PAGESIZE,
+};
 
 use crate::memorymanager::api::teardown;
 use crate::memorymanager::internals::allocator::AllocatedBy::{Heap, Mmap};
@@ -45,7 +34,7 @@ pub(crate) enum AllocatedBy {
     /// Used if the memory was reserved using `mmap`.
     Mmap = 0,
     /// Used if the memory was reserved on the heap using `malloc`.
-    Heap = 1
+    Heap = 1,
 }
 
 impl AllocatedBy {
@@ -64,7 +53,7 @@ impl AllocatedBy {
             1 => Heap,
             _ => {
                 panic!("Use of undefined alloc type")
-            }
+            },
         }
     }
 }
@@ -72,7 +61,7 @@ impl AllocatedBy {
 pub struct AllocatorError<'a> {
     pub message: &'a str,
     pub location: &'static Location<'static>,
-    pub backtrace: Backtrace
+    pub backtrace: Backtrace,
 }
 
 pub static ABORTED: AtomicBool = AtomicBool::new(false);
@@ -110,7 +99,7 @@ pub(crate) unsafe fn auto_allocate_memory(ptr: &mut AtomicMemoryPointer, size: u
         abort(&mut AllocatorError {
             message: "Allocation of memory failed",
             location: Location::caller(),
-            backtrace: Backtrace::capture()
+            backtrace: Backtrace::capture(),
         })
     }
     Mmap
@@ -134,10 +123,7 @@ pub(crate) unsafe fn allocate_mmap(size: usize) -> *mut c_void {
 }
 
 pub(crate) unsafe fn allocate_heap(size: usize) -> *mut c_void {
-    let p_new: *mut c_void = malloc(size);
-    if !p_new.is_null() {
-        memset(p_new, 0, size);
-    }
+    let p_new: *mut c_void = calloc(size, 1);
     p_new
 }
 
@@ -173,7 +159,7 @@ pub(crate) unsafe fn free_heap(ptr: *mut c_void) -> bool {
 }
 
 pub(crate) unsafe fn auto_reallocate_memory(
-    ptr: &mut AtomicMemoryPointer, old_size: usize, new_size: usize, allocated_by: AllocatedBy
+    ptr: &mut AtomicMemoryPointer, old_size: usize, new_size: usize, allocated_by: AllocatedBy,
 ) -> AllocatedBy {
     let old: *mut c_void = ptr.get();
     let copy_size: usize = if old_size < new_size { old_size } else { new_size };
@@ -182,29 +168,22 @@ pub(crate) unsafe fn auto_reallocate_memory(
     if new.is_null() {
         // heap allocation failed
         new = allocate_mmap(new_size);
-        ptr.store(new);
-        return Mmap;
+        if !new.is_null() {
+            ptr.store(new);
+            return Mmap;
+        } else {
+            abort(&mut AllocatorError {
+                message: "Reallocation of memory failed",
+                location: Location::caller(),
+                backtrace: Backtrace::capture(),
+            })
+        }
     }
 
     memcpy(new, old, copy_size);
-    assert!(auto_free_memory(old, old_size, allocated_by));
+    ptr.clear();
     ptr.store(new);
+    assert!(auto_free_memory(old, old_size, allocated_by));
     assert!(!ptr.get().is_null());
     Heap
 }
-
-// pub(crate) unsafe fn reallocate_heap(p_old: *mut c_void, old_size: usize, new_size: usize) -> *mut c_void {
-// assert!(new_size <= REALLOC_UPPER_LIMIT as usize);
-// let mut p_tmp: *mut c_void = realloc(p_old, new_size);
-// if p_tmp.is_null() {
-// if old_size > new_size {
-// return p_old;
-// }
-//
-// p_tmp = malloc(new_size);
-// assert!(!p_tmp.is_null());
-// memcpy(p_tmp, p_old, old_size);
-// free(p_old);
-// }
-// p_tmp
-// }

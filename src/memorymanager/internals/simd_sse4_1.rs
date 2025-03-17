@@ -1,15 +1,10 @@
-use std::arch::x86_64::{__m128i,
-                        _mm_cmpeq_epi16,
-                        _mm_cmpgt_epi16,
-                        _mm_loadu_si128,
-                        _mm_movemask_epi8,
-                        _mm_set1_epi16,
-                        _mm_test_all_ones,
-                        _mm_testz_si128,
-                        _mm_tzcnt_32,
-                        _mm_tzcnt_64};
+use std::arch::x86_64::{
+    __m128i, _mm_cmpeq_epi16, _mm_cmpgt_epi16, _mm_loadu_si128, _mm_movemask_epi8, _mm_set1_epi16, _mm_test_all_ones, _mm_testz_si128, _mm_tzcnt_32,
+    _mm_tzcnt_64,
+};
 use std::ffi::c_void;
 
+/// Returns if all bits are set in the referenced memory region.
 #[target_feature(enable = "sse4.1")]
 pub(crate) unsafe fn all_bits_set_256_sse41(p_256: *const c_void) -> bool {
     // Checks p_256 in two separate halves
@@ -36,6 +31,7 @@ pub(crate) unsafe fn get_index_first_set_bit_256_sse41(p_256: *const c_void) -> 
     -1
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 #[target_feature(enable = "sse4.1")]
 pub(crate) unsafe fn get_index_first_set_bit_256_sse41_2(p_256: *const c_void) -> Option<i32> {
     // Iterate over all 64-bit words in p_256
@@ -51,6 +47,7 @@ pub(crate) unsafe fn get_index_first_set_bit_256_sse41_2(p_256: *const c_void) -
     None
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 #[target_feature(enable = "sse4.1")]
 pub(crate) unsafe fn sorted_insert_256_sse41(a: u16, p_256: *const u16) -> i32 {
     let test_vector: __m128i = _mm_loadu_si128(p_256 as *const __m128i);
@@ -67,6 +64,7 @@ pub(crate) unsafe fn sorted_insert_256_sse41(a: u16, p_256: *const u16) -> i32 {
     -1
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 #[target_feature(enable = "sse4.1")]
 pub(crate) unsafe fn sorted_insert_256_sse41_2(a: u16, p_256: *const u16) -> Option<usize> {
     let test_vector: __m128i = _mm_loadu_si128(p_256 as *const __m128i);
@@ -83,6 +81,7 @@ pub(crate) unsafe fn sorted_insert_256_sse41_2(a: u16, p_256: *const u16) -> Opt
     None
 }
 
+/// Returns if `a` is contained in `p_256`.
 #[target_feature(enable = "sse4.1")]
 pub(crate) unsafe fn a_in_b_256_sse41(a: u16, p_b256: *const u16) -> i32 {
     let test_vector: __m128i = _mm_loadu_si128(p_b256 as *const __m128i);

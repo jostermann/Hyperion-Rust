@@ -91,13 +91,13 @@ impl Container {
     }
 
     /// Returns the size of this container's header.
-    /// 
+    ///
     /// # Example
     /// ```rust
     /// use hyperion_rust::hyperion::components::container::{get_container_head_size, Container};
     /// let container = Container::default();
     /// let container_head_size = get_container_head_size();
-    /// 
+    ///
     /// assert_eq!(container_head_size, 4);
     /// ```
     #[inline]
@@ -106,13 +106,13 @@ impl Container {
     }
 
     /// Sets the amount of free bytes to the specified value.
-    /// 
+    ///
     /// # Example
     /// ```rust
     /// use hyperion_rust::hyperion::components::container::Container;
     /// let mut container = Container::default();
     /// container.set_free_size_left(10);
-    /// 
+    ///
     /// assert_eq!(container.free_bytes(), 10);
     /// ```
     #[inline]
@@ -134,7 +134,7 @@ impl Container {
     /// let mut container = Container::default();
     /// container.set_size(30);
     /// container.increment_container_size(3);
-    /// 
+    ///
     /// assert_eq!(container.size(), 62);
     /// ```
     pub fn increment_container_size(&mut self, required_minimum: u32) -> u32 {
@@ -232,15 +232,15 @@ pub fn get_container_head_size() -> usize {
 }
 
 /// Returns the size of this container's link type.
-/// 
+///
 /// # Example
 /// ```rust
 /// use hyperion_rust::hyperion::components::container::ContainerLink;
 /// use hyperion_rust::memorymanager::api::HyperionPointer;
-/// 
+///
 /// let hyperion_pointer_size = size_of::<HyperionPointer>();
-/// let container_link_size = size_of::<ContainerLink>(); 
-/// 
+/// let container_link_size = size_of::<ContainerLink>();
+///
 /// assert_eq!(hyperion_pointer_size, container_link_size);
 /// ```
 #[inline]
@@ -249,10 +249,10 @@ pub fn get_container_link_size() -> usize {
 }
 
 fn update_jump_table(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
-    if let Some(stored_node) = ocx.jump_table_sub_context.top_node.as_mut() {
+    if let Some(stored_node) = ocx.top_jump_table_context.top_node.as_mut() {
         if as_top_node(*stored_node).jump_table_present() {
-            let char_to_check: u8 = if ocx.jump_table_sub_context.root_container_sub_char_set {
-                ocx.jump_table_sub_context.root_container_sub_char
+            let char_to_check: u8 = if ocx.top_jump_table_context.root_container_sub_char_set {
+                ocx.top_jump_table_context.root_container_sub_char
             } else {
                 ctx.second_char
             };
@@ -267,17 +267,6 @@ fn update_jump_table(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut Con
                 write_unaligned(current_pointer, current_value as i16 + usage_delta);
                 current_value
             });
-
-            /*let mut previous_value: i32 = -1;
-            for i in (char_to_check as usize >> SUBLEVEL_JUMPTABLE_SHIFTBITS)..SUBLEVEL_JUMPTABLE_ENTRIES {
-                unsafe {
-                    let current_pointer: *mut i16 = jump_table.add(i);
-                    let current_value: i32 = read_unaligned(current_pointer) as i32;
-                    assert!(previous_value < current_value);
-                    previous_value = current_value;
-                    write_unaligned(current_pointer, current_value as i16 + usage_delta);
-                }
-            }*/
         }
     }
 
@@ -323,18 +312,6 @@ fn update_container_jump_table(ocx: &mut OperationContext, usage_delta: i16) {
             (*jump_table_entry).set_offset(((*jump_table_entry).offset() as i32 + usage_delta as i32) as usize);
         }
     });
-
-    /*for i in (0..TOPLEVEL_JUMPTABLE_ENTRIES * ocx.get_root_container().jump_table() as usize).rev() {
-        unsafe {
-            let jump_table_entry: *mut SubNodeJumpTableEntry = jump_table_entry_base.add(i);
-
-            if (*jump_table_entry).key() as i32 > ocx.jump_context.top_node_key {
-                (*jump_table_entry).set_offset(((*jump_table_entry).offset() as i32 + usage_delta as i32) as u32);
-            } else {
-                break;
-            }
-        }
-    }*/
 }
 
 /// Updates this container's space property by the given `delta`.
@@ -353,8 +330,8 @@ pub fn update_space(delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerT
     update_container_jump_table(ocx, delta);
     update_embedded_container(delta, ocx);
 
-    ctx.safe_offset = (ocx.get_root_container().size() - ocx.get_root_container().free_bytes() as u32) as usize;
-    assert!(ctx.safe_offset > size_of::<Container>());
+    ctx.max_offset = (ocx.get_root_container().size() - ocx.get_root_container().free_bytes() as u32) as usize;
+    assert!(ctx.max_offset > size_of::<Container>());
 }
 
 /// Returns a pointer to the first jump table entry referenced to by `container`.
@@ -408,4 +385,34 @@ pub struct RootContainerEntry {
 
 pub struct RootContainerArray {
     pub root_container_entries: [Option<RootContainerEntry>; ROOT_NODES],
+}
+
+#[cfg(test)]
+mod test_container_header {
+    use crate::hyperion::components::container::{Container, EmbeddedContainer};
+    #[test]
+    fn test_container_retrieval() {
+        let size: u32 = 0b1001001011100010110;
+        let free_bytes: u8 = 0b00010101;
+        let jump_table: u8 = 0b101;
+        let split_delay: u8 = 0b01;
+
+        let container: Container =
+            Container::new().with_size(size).with_free_bytes(free_bytes).with_jump_table(jump_table).with_split_delay(split_delay);
+
+        assert_eq!(size_of_val(&container), 4);
+        assert_eq!(container.size(), size);
+        assert_eq!(container.free_bytes(), free_bytes);
+        assert_eq!(container.jump_table(), jump_table);
+        assert_eq!(container.split_delay(), split_delay);
+    }
+
+    #[test]
+    fn test_embedded_container_header() {
+        let size: u8 = 0b10010101;
+        let emb_container: EmbeddedContainer = EmbeddedContainer::new().with_size(size);
+
+        assert_eq!(size_of_val(&emb_container), 1);
+        assert_eq!(emb_container.size(), size);
+    }
 }

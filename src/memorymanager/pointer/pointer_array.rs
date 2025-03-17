@@ -25,7 +25,7 @@ pub(crate) struct PointerArray {
     /// `Box` pointers is beneficial because they provide integrated memory
     /// safety at compile time and the concurrent usage of at most one thread
     /// at a time is guaranteed.
-    pub array: Box<[Option<Box<Metabin>>]>
+    pub array: Box<[Option<Box<Metabin>>]>,
 }
 
 /// Amount of which the `PointerArray` will be enlarged if a reallocation is triggered.
@@ -40,7 +40,7 @@ impl PointerArray {
         vec.extend((0..initial_num_metabins).map(|_| Some(Box::new(Metabin::default()))));
         vec.extend((initial_num_metabins..POINTER_ARRAY_INCREMENT).map(|_| None));
         Self {
-            array: vec.into_boxed_slice()
+            array: vec.into_boxed_slice(),
         }
     }
 

@@ -44,3 +44,26 @@ impl TopNode {
         self.container_type() == NodeState::SubNode
     }
 }
+
+#[cfg(test)]
+mod test_top_node {
+    use crate::hyperion::components::node::{NodeState, NodeType};
+    use crate::hyperion::components::top_node::TopNode;
+
+    #[test]
+    fn test_top_node_retrieval() {
+        let top_node: TopNode = TopNode::new()
+            .with_type_flag(NodeType::InnerNode)
+            .with_container_type(NodeState::TopNode)
+            .with_delta(0b110)
+            .with_jump_table_present(false)
+            .with_jump_successor_present(false);
+
+        assert_eq!(size_of_val(&top_node), 1);
+        assert_eq!(top_node.type_flag(), NodeType::InnerNode);
+        assert_eq!(top_node.container_type(), NodeState::TopNode);
+        assert_eq!(top_node.delta(), 0b110);
+        assert!(!top_node.jump_successor_present());
+        assert!(!top_node.jump_table_present());
+    }
+}

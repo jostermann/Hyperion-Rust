@@ -1,4 +1,3 @@
-
 pub const ERR_NO_RETURN_VALUE: &str = "Expected some return value in the operation context, but got None.";
 
 pub const ERR_NO_INPUT_VALUE: &str = "Expected some return input in the operation context, but got None.";

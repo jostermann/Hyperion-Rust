@@ -4,18 +4,18 @@ use crate::hyperion::components::context::TraversalType::{
     FilledTwoCharSubNodeInFirstCharScope, FilledTwoCharTopNode, FilledTwoCharTopNodeInFirstCharScope, InvalidTraversal,
 };
 use crate::hyperion::components::node::{NodeState, NodeValue};
-use crate::hyperion::components::node_header::{NodeHeader};
+use crate::hyperion::components::node_header::NodeHeader;
+use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeader;
 use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
 use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
 use crate::memorymanager::api::{Arena, HyperionPointer};
 use bitfield_struct::bitfield;
 use std::ptr::null_mut;
-use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeader;
 
 pub const DELTA_MAX_VALUE: u8 = 7;
-pub const SUBLEVEL_JUMPTABLE_HWM: usize = 16;
+pub const TOP_NODE_JUMP_TABLE_HWM: usize = 16;
 pub const TOPLEVEL_JUMPTABLE_HWM: usize = 9;
-pub const TOPLEVEL_JUMPTABLE_INCREMENTS: usize = 7;
+pub const MAX_CONTAINER_JUMP_TABLES: usize = 7;
 pub const TOPLEVEL_AGGRESSIVE_GROWTH__HWM: usize = 5;
 
 #[derive(Debug, PartialEq)]
@@ -95,7 +95,7 @@ pub struct ContainerTraversalContext {
     pub last_top_char_seen: u8,
     pub last_sub_char_seen: u8,
     pub current_container_offset: usize,
-    pub safe_offset: usize,
+    pub max_offset: usize,
     pub first_char: u8,
     pub second_char: u8,
 }
@@ -126,23 +126,11 @@ impl ContainerTraversalContext {
     }
 
     pub fn key_delta_top(&mut self) -> u8 {
-        self.header.last_top_char_set()
-            .then(|| self.first_char - self.last_top_char_seen)
-            .filter(|&delta| delta <= DELTA_MAX_VALUE)
-            .unwrap_or(0)
-        /*(self.header.last_top_char_set() && ((self.first_char - self.last_top_char_seen) as usize) <= KEY_DELTA_STATES)
-            .then_some(self.first_char - self.last_top_char_seen)
-            .unwrap_or(0)*/
+        self.header.last_top_char_set().then(|| self.first_char - self.last_top_char_seen).filter(|&delta| delta <= DELTA_MAX_VALUE).unwrap_or(0)
     }
 
     pub fn key_delta_sub(&mut self) -> u8 {
-        self.header.last_sub_char_set()
-            .then(|| self.second_char - self.last_sub_char_seen)
-            .filter(|&delta| delta <= DELTA_MAX_VALUE)
-            .unwrap_or(0)
-        /*(self.header.last_sub_char_set() && ((self.second_char - self.last_sub_char_seen) as usize) <= KEY_DELTA_STATES)
-            .then_some(self.second_char - self.last_top_char_seen)
-            .unwrap_or(0)*/
+        self.header.last_sub_char_set().then(|| self.second_char - self.last_sub_char_seen).filter(|&delta| delta <= DELTA_MAX_VALUE).unwrap_or(0)
     }
 }
 

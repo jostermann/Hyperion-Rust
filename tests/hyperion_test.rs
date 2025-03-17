@@ -1,17 +1,17 @@
+use hyperion_rust::hyperion::api::{bootstrap, clear_test, get, get_root_container_entry, log_to_file, put};
+use hyperion_rust::hyperion::components::container::initialize_container;
+use hyperion_rust::hyperion::components::container::Container;
+use hyperion_rust::hyperion::components::node::NodeValue;
+use hyperion_rust::hyperion::components::return_codes::ReturnCode::OK;
+use hyperion_rust::hyperion::internals::core::put_debug;
+use hyperion_rust::memorymanager::api::get_pointer;
+use lazy_static::lazy_static;
 use std::ffi::c_void;
 use std::intrinsics::copy_nonoverlapping;
 use std::ptr::copy;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
-use lazy_static::lazy_static;
-use hyperion_rust::hyperion::api::{bootstrap, clear_test, get, get_root_container_entry, log_to_file, put};
-use hyperion_rust::hyperion::components::container::Container;
-use hyperion_rust::hyperion::components::node::NodeValue;
-use hyperion_rust::hyperion::components::return_codes::ReturnCode::OK;
-use hyperion_rust::hyperion::components::container::initialize_container;
-use hyperion_rust::hyperion::internals::core::put_debug;
-use hyperion_rust::memorymanager::api::get_pointer;
 
 lazy_static! {
     static ref TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -38,7 +38,7 @@ fn test_initialize_container_001() {
 }
 
 #[test]
-fn test_container_jumptable_01 () {
+fn test_container_jumptable_01() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let mut val: [u8; 2] = [0, 0];
     let mut root_container_array = bootstrap();
@@ -50,20 +50,17 @@ fn test_container_jumptable_01 () {
         put_debug(data.arena.unwrap(), data.hyperion_pointer.as_mut().unwrap(), &mut val[0], 2, None);
     }
 
-
     let container = get_pointer(data.arena.unwrap(), data.hyperion_pointer.as_mut().unwrap(), 0, val[0]) as *mut Container;
     assert_eq!(unsafe { (*container).jump_table() }, 0);
     clear_test();
 }
 
 #[test]
-fn test_container_split_01 () {
+fn test_container_split_01() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let elements = 256;
     let limit = 103;
-    let mut node_value = NodeValue {
-        value: 0
-    };
+    let mut node_value = NodeValue { value: 0 };
     let mut val: [u8; 128] = [0; 128];
     let mut root_container_array = bootstrap();
 
@@ -96,9 +93,7 @@ fn test_container_split_02() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let elements = 256;
     let limit = 106;
-    let mut node_value = NodeValue {
-        value: 0
-    };
+    let mut node_value = NodeValue { value: 0 };
     let mut val: [u8; 128] = [0; 128];
     let mut root_container_array = bootstrap();
 
@@ -130,9 +125,7 @@ fn test_container_split_03() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let elements = 256;
     let limit = 116;
-    let mut node_value = NodeValue {
-        value: 0
-    };
+    let mut node_value = NodeValue { value: 0 };
     let mut val: [u8; 128] = [0; 128];
     let mut root_container_array = bootstrap();
 
@@ -164,9 +157,7 @@ fn test_container_split_04() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let elements = 256;
     let limit = 200;
-    let mut node_value = NodeValue {
-        value: 0
-    };
+    let mut node_value = NodeValue { value: 0 };
     let mut val: [u8; 128] = [0; 128];
     let mut root_container_array = bootstrap();
 
@@ -199,9 +190,7 @@ fn test_container_split_05() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let elements = 256;
     let limit = 109;
-    let mut node_value = NodeValue {
-        value: 0
-    };
+    let mut node_value = NodeValue { value: 0 };
     let mut val: [u8; 128] = [0; 128];
     let mut root_container_array = bootstrap();
 
@@ -235,9 +224,7 @@ use rand::Rng;
 fn test_container_split_06() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let elements = 25000;
-    let mut node_value = NodeValue {
-        value: 0
-    };
+    let mut node_value = NodeValue { value: 0 };
     let mut val: [u8; 128] = [0; 128];
     let mut root_container_array = bootstrap();
     let base_seed1: i32 = rand::random_range(0..=65535);
@@ -247,7 +234,9 @@ fn test_container_split_06() {
     let mut seed2 = base_seed2;
 
     let dest = unsafe { (val.as_mut_ptr() as *mut u16).add(1) };
-    unsafe { *dest = 0; }
+    unsafe {
+        *dest = 0;
+    }
 
     for i in 0..elements {
         unsafe {
@@ -259,9 +248,10 @@ fn test_container_split_06() {
         put(&mut root_container_array, val.as_mut_ptr(), 4, Some(&mut node_value));
     }
 
-
     let mut p_ret = &mut node_value as *mut NodeValue;
-    unsafe { *dest = 0; }
+    unsafe {
+        *dest = 0;
+    }
     seed1 = base_seed1;
     seed2 = base_seed2;
 
@@ -283,9 +273,7 @@ fn test_container_split_06() {
 fn test_container_split_06b() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let elements = 4506;
-    let mut node_value = NodeValue {
-        value: 0
-    };
+    let mut node_value = NodeValue { value: 0 };
     let mut val: [u8; 128] = [0; 128];
     let mut root_container_array = bootstrap();
     let base_seed1: i32 = 26948;
@@ -294,7 +282,9 @@ fn test_container_split_06b() {
     let mut seed2 = base_seed2;
 
     let dest = unsafe { (val.as_mut_ptr() as *mut u16).add(1) };
-    unsafe { *dest = 0; }
+    unsafe {
+        *dest = 0;
+    }
 
     for i in 0..elements {
         unsafe {
@@ -306,9 +296,10 @@ fn test_container_split_06b() {
         put(&mut root_container_array, val.as_mut_ptr(), 4, Some(&mut node_value));
     }
 
-
     let mut p_ret = &mut node_value as *mut NodeValue;
-    unsafe { *dest = 0; }
+    unsafe {
+        *dest = 0;
+    }
     seed1 = base_seed1;
     seed2 = base_seed2;
 

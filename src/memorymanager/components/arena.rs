@@ -1,13 +1,13 @@
-use std::array::from_fn;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Once;
 use lazy_static::lazy_static;
 use spin::mutex::Mutex;
 use spin::{MutexGuard, RwLock};
+use std::array::from_fn;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Once;
 
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS};
 use crate::memorymanager::components::metabin::Metabin;
-use crate::memorymanager::components::superbin::{Superbin, SUPERBLOCK_ARRAY_MAXSIZE};
+use crate::memorymanager::components::superbin::{Superbin, SUPERBIN_ARRAY_MAXSIZE};
 use crate::memorymanager::internals::allocator::free_mmap;
 use crate::memorymanager::internals::compression::{CompressionSlidingWindow, SLIDING_WINDOW_SIZE};
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
@@ -47,7 +47,7 @@ pub struct ArenaInner {
     pub(crate) compression_cache: AtomicMemoryPointer,
     pub(crate) compression_iterator: i16,
     pub(crate) sliding_window: [CompressionSlidingWindow; SLIDING_WINDOW_SIZE],
-    pub(crate) superbins: [Superbin; SUPERBLOCK_ARRAY_MAXSIZE]
+    pub(crate) superbins: [Superbin; SUPERBIN_ARRAY_MAXSIZE],
 }
 
 impl ArenaInner {
@@ -70,7 +70,7 @@ impl ArenaInner {
     }
 
     pub(crate) fn teardown_all_superbins(&mut self) {
-        (0..SUPERBLOCK_ARRAY_MAXSIZE).for_each(|i| self.teardown_superblock(i as u16));
+        (0..SUPERBIN_ARRAY_MAXSIZE).for_each(|i| self.teardown_superblock(i as u16));
     }
 
     pub(crate) fn teardown_superblock(&mut self, index: u16) {
@@ -89,12 +89,12 @@ impl ArenaInner {
 }
 
 pub struct Arena {
-    pub spinlock: spin::Mutex<ArenaInner>
+    pub spinlock: spin::Mutex<ArenaInner>,
 }
 
 impl Default for Arena {
     fn default() -> Self {
-        let mut superbins: [Superbin; SUPERBLOCK_ARRAY_MAXSIZE] = from_fn(|_| Superbin::new());
+        let mut superbins: [Superbin; SUPERBIN_ARRAY_MAXSIZE] = from_fn(|_| Superbin::new());
         for (i, superbin) in superbins.iter_mut().enumerate() {
             superbin.initialize(i as u16);
         }
@@ -104,8 +104,8 @@ impl Default for Arena {
                 compression_cache: AtomicMemoryPointer::new(),
                 compression_iterator: 1,
                 sliding_window: [CompressionSlidingWindow::default(); SLIDING_WINDOW_SIZE],
-                superbins
-            })
+                superbins,
+            }),
         }
     }
 }

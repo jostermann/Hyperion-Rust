@@ -18,3 +18,18 @@ impl PathCompressedNodeHeader {
         self.as_raw() as *const u8
     }
 }
+
+#[cfg(test)]
+mod test_path_compressed_node {
+    use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeader;
+
+    #[test]
+    fn test_compressed_header() {
+        let size: u8 = 0b0101101;
+        let pc_node: PathCompressedNodeHeader = PathCompressedNodeHeader::new().with_size(size).with_value_present(true);
+
+        assert_eq!(size_of_val(&pc_node), 1);
+        assert_eq!(pc_node.size(), size);
+        assert!(pc_node.value_present());
+    }
+}

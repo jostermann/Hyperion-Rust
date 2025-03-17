@@ -3,13 +3,13 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::hyperion::components::container::EmbeddedContainer;
 pub struct AtomicPointer<T> {
-    ptr: AtomicPtr<T>
+    ptr: AtomicPtr<T>,
 }
 
 impl<T> Clone for AtomicPointer<T> {
     fn clone(&self) -> Self {
         AtomicPointer {
-            ptr: AtomicPtr::new(self.ptr.load(Ordering::SeqCst))
+            ptr: AtomicPtr::new(self.ptr.load(Ordering::SeqCst)),
         }
     }
 }
@@ -23,7 +23,7 @@ impl<T> Default for AtomicPointer<T> {
 impl<T> AtomicPointer<T> {
     pub fn new() -> AtomicPointer<T> {
         AtomicPointer {
-            ptr: AtomicPtr::new(null_mut())
+            ptr: AtomicPtr::new(null_mut()),
         }
     }
 

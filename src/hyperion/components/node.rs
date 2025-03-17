@@ -295,3 +295,33 @@ pub fn update_successor_key(
     handle_jump_context(node, diff, absolute_key, ocx, ctx);
     OK
 }
+
+#[cfg(test)]
+mod test_node {
+    use crate::hyperion::components::node::{Node, NodeState, NodeType};
+    use crate::hyperion::components::node_header::NodeHeader;
+    use crate::hyperion::components::top_node::TopNode;
+
+    #[test]
+    fn test_node_size() {
+        let node_header = NodeHeader::new_top_node(
+            TopNode::new()
+                .with_type_flag(NodeType::InnerNode)
+                .with_container_type(NodeState::TopNode)
+                .with_delta(0b110)
+                .with_jump_table_present(false)
+                .with_jump_successor_present(false),
+        );
+
+        let node = Node {
+            header: node_header,
+            key: 116,
+        };
+
+        assert_eq!(size_of_val(&node.key), 1);
+        assert_eq!(size_of_val(&node.header), 1);
+        assert_eq!(size_of_val(&node), 2);
+
+        assert_eq!(node.key, 116);
+    }
+}

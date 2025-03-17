@@ -3,33 +3,38 @@ use std::ffi::c_void;
 use crate::memorymanager::components::arena::{get_arena_mut, ArenaInner, NUM_ARENAS};
 pub use crate::memorymanager::components::arena::{get_next_arena, Arena};
 use crate::memorymanager::components::bin::Bin;
-use crate::memorymanager::components::superbin::SUPERBLOCK_ARRAY_MAXSIZE;
+use crate::memorymanager::components::superbin::SUPERBIN_ARRAY_MAXSIZE;
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, free_mmap, AllocatedBy};
 use crate::memorymanager::internals::compression::{decompress_extended, CompressionState};
 use crate::memorymanager::internals::core::{free_from_pointer, get_chunk, get_new_pointer, reallocate_from_pointer, roundup};
+pub use crate::memorymanager::internals::core::{CONTAINER_MAX_SPLITS, CONTAINER_SPLIT_BITS};
 pub use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 pub use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 pub use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
-pub use crate::memorymanager::internals::core::{CONTAINER_SPLIT_BITS, CONTAINER_MAX_SPLITS};
 
 pub const ARENA_COMPRESSION: usize = 16646144;
 
+/// Stores the chained memory upon splitting a container.
 #[derive(Default)]
 pub struct SegmentChain {
+    /// Each chunk is responsible for storing the keys [32 * i, (32 * (i + 1)) - 1]. `chars` stores the smallest key of each chunk.
     pub chars: [u8; 1usize << CONTAINER_SPLIT_BITS],
-    pub pointer: [AtomicMemoryPointer; 1usize << CONTAINER_SPLIT_BITS]
+    /// Storing a raw pointer to the memory ragion of each chunk.
+    pub pointer: [AtomicMemoryPointer; 1usize << CONTAINER_SPLIT_BITS],
 }
 
+/// Initializes the memory manager.
 pub fn initialize() {
     for i in 0..NUM_ARENAS {
         let arena: &mut Arena = unsafe { get_arena_mut(i as u32).as_mut().unwrap() };
         let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut arena.lock();
         inner.compression_cache = AtomicMemoryPointer::new();
         inner.compression_iterator = 1;
-        (0..SUPERBLOCK_ARRAY_MAXSIZE).for_each(|j| inner.initialize_superbin(j as u16));
+        (0..SUPERBIN_ARRAY_MAXSIZE).for_each(|j| inner.initialize_superbin(j as u16));
     }
 }
 
+/// Frees all memory allocated by the memory manager and tears down the complete memory manager.
 pub fn teardown() {
     for i in 0..NUM_ARENAS {
         let arena: &mut Arena = unsafe { get_arena_mut(i as u32).as_mut().unwrap() };
@@ -44,8 +49,13 @@ pub fn teardown() {
     }
 }
 
+/// Registers an existing chained memory `segment` in the memory manager.
+///
+/// This function will check, if there already exists some chained memory for the given character. Existing chained memory will be freed
+/// and overwritten by the given chained memory.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn register_chained_memory(
-    arena: *mut Arena, hyperion_pointer: *mut HyperionPointer, character: u8, segment: *mut c_void, size: usize, inplace: bool, overallocated: i32
+    arena: *mut Arena, hyperion_pointer: *mut HyperionPointer, character: u8, segment: *mut c_void, size: usize, inplace: bool, overallocated: i32,
 ) {
     let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut unsafe { arena.as_mut().unwrap() }.lock();
     let bin: &mut Bin = inner.get_bin_ref(unsafe { hyperion_pointer.as_mut().unwrap() });
@@ -62,10 +72,11 @@ pub fn register_chained_memory(
         }
 
         if (*chain_pointer).data.is_notnull() {
+            // Free the chained memory, if there exists some chained memory for the given key.
             auto_free_memory(
                 (*chain_pointer).data.get(),
                 (*chain_pointer).requested_size as usize + (*chain_pointer).overallocated as usize,
-                (*chain_pointer).header.alloced_by()
+                (*chain_pointer).header.alloced_by(),
             );
         }
         (*chain_pointer).data = AtomicMemoryPointer::new();
@@ -76,6 +87,11 @@ pub fn register_chained_memory(
     }
 }
 
+/// Returns if the memory region pointed to by the [`HyperionPointer`] is a chained memory.
+///
+/// # Safety
+/// This function is intended for use on extended hyperion pointers. Calling this function on small, mmap-ed segments might cause undefined behavior.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn is_chained_pointer(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer) -> bool {
     let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut unsafe { arena.as_mut().unwrap() }.lock();
     let bin: &mut Bin = inner.get_bin_ref(unsafe { hyperion_pointer.as_mut().unwrap() });
@@ -86,6 +102,12 @@ pub fn is_chained_pointer(arena: *mut Arena, hyperion_pointer: *mut HyperionPoin
     }
 }
 
+/// Loads all keys and memory regions in the chained memory pointed to by `hyperion_pointer` into the given [`SegmentChain`].
+///
+/// # Returns
+/// - the found keys and memory regions in `segment_chain`.
+/// - the amount of found elements.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_all_chained_pointer(segment_chain: &mut SegmentChain, arena: *mut Arena, hyperion_pointer: &mut HyperionPointer) -> i32 {
     let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut unsafe { arena.as_mut().unwrap() }.lock();
     let bin: &mut Bin = inner.get_bin_ref(hyperion_pointer);
@@ -119,6 +141,9 @@ pub fn get_all_chained_pointer(segment_chain: &mut SegmentChain, arena: *mut Are
     elements as i32
 }
 
+/// Returns a raw pointer to the chained memory region responsible for `needed_character`.
+///
+/// If `init` is set, this function will allocate new memory.
 pub fn get_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPointer, character: u8, init: bool, size: usize) -> *mut c_void {
     let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut arena.lock();
     let bin: &mut Bin = inner.get_bin_ref(hyperion_pointer);
@@ -131,11 +156,13 @@ pub fn get_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPoi
 
         if (*char_entry).data.is_null() {
             if init {
+                // Allocate new memory
                 let target_size = roundup(size);
                 (*char_entry).header.set_alloced_by(AllocatedBy::Heap);
                 (*char_entry).data.store(allocate_heap(target_size));
                 (*char_entry).set_flags(size as i32, (target_size - size) as i16, 0, 0, CompressionState::NONE, offset as u8);
             } else {
+                // Scan for a chained memory region that is not null
                 while offset >= 0 && (*char_entry).data.is_null() {
                     char_entry = char_entry.sub(1);
                     offset -= 1;
@@ -151,22 +178,41 @@ pub fn get_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPoi
     }
 }
 
+/// Returns a raw pointer to the chunk specified in the [`HyperionPointer`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_pointer(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer, might_increment: i32, needed_character: u8) -> *mut c_void {
     get_chunk(&mut unsafe { arena.as_mut().unwrap() }.lock(), unsafe { hyperion_pointer.as_mut().unwrap() }, might_increment, needed_character)
 }
 
+/// Reallocates the memory pointed to by the [`HyperionPointer`] by `size` bytes.
+///
+/// # Returns
+/// - a [`HyperionPointer`] pointing to the allocated memory.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn reallocate(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer, size: usize, needed_character: u8) -> HyperionPointer {
     reallocate_from_pointer(&mut unsafe { arena.as_mut().unwrap() }.lock(), unsafe { hyperion_pointer.as_mut().unwrap() }, size, needed_character)
 }
 
+/// Allocates `size` bytes as chained memory.
+///
+/// # Returns
+/// - a [`HyperionPointer`] pointing to the allocated memory.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn malloc_chained(arena: &mut Arena, size: usize, chain_count: i32) -> HyperionPointer {
     get_new_pointer(&mut arena.lock(), size, chain_count)
 }
 
+/// Allocates `size` bytes in the memory manager.
+///
+/// # Returns
+/// - a [`HyperionPointer`] pointing to the allocated memory.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn malloc(arena: *mut Arena, size: usize) -> HyperionPointer {
     get_new_pointer(&mut unsafe { arena.as_mut().unwrap() }.lock(), size, 0)
 }
 
+/// Frees the memory pointed to by the [`HyperionPointer`].
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn free(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer) {
     free_from_pointer(&mut unsafe { arena.as_mut().unwrap() }.lock(), unsafe { hyperion_pointer.as_mut().unwrap() });
 }

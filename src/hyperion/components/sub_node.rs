@@ -73,3 +73,24 @@ impl SubNode {
         self.container_type() == NodeState::SubNode
     }
 }
+
+#[cfg(test)]
+mod test_sub_node {
+    use crate::hyperion::components::node::{NodeState, NodeType};
+    use crate::hyperion::components::sub_node::{ChildLinkType, SubNode};
+
+    #[test]
+    fn test_sub_node_retrieval() {
+        let sub_node: SubNode = SubNode::new()
+            .with_type_flag(NodeType::InnerNode)
+            .with_container_type(NodeState::TopNode)
+            .with_delta(0b110)
+            .with_child_container(ChildLinkType::EmbeddedContainer);
+
+        assert_eq!(size_of_val(&sub_node), 1);
+        assert_eq!(sub_node.type_flag(), NodeType::InnerNode);
+        assert_eq!(sub_node.container_type(), NodeState::TopNode);
+        assert_eq!(sub_node.delta(), 0b110);
+        assert_eq!(sub_node.child_container(), ChildLinkType::EmbeddedContainer);
+    }
+}

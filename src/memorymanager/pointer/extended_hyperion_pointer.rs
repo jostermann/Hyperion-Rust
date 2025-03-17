@@ -40,7 +40,7 @@ pub struct ExtendedHyperionPointerHeader {
 
     /// TODO
     #[bits(4)]
-    pub chained_pointer_count: u8
+    pub chained_pointer_count: u8,
 }
 
 /// Holds all data used by the `ExtendedHyperionPointer`.
@@ -55,7 +55,7 @@ pub struct ExtendedHyperionPointer {
     /// Total size originally allocated or reallocated.
     pub requested_size: i32,
     /// Amount of overallocation
-    pub overallocated: i16
+    pub overallocated: i16,
 }
 
 impl ExtendedHyperionPointer {
@@ -85,7 +85,7 @@ impl ExtendedHyperionPointer {
 
     /// Updates the calling Extended pointer's flags to the given values.
     pub fn set_flags(
-        &mut self, requested_size: i32, overallocated: i16, c2r: u8, c2reall: u8, compression_state: CompressionState, chained_pointer: u8
+        &mut self, requested_size: i32, overallocated: i16, c2r: u8, c2reall: u8, compression_state: CompressionState, chained_pointer: u8,
     ) {
         self.requested_size = requested_size;
         self.overallocated = overallocated;
@@ -123,7 +123,12 @@ mod extended_hyperion_pointer_tests {
         assert_eq!(ehp.header.alloced_by(), Mmap, "Expected alloced_by to be Mmap, but got {:?}.", ehp.header.alloced_by());
         assert_eq!(ehp.header.chained_pointer_count(), 0, "Expected chained_pointer_count to be 0, but got {}.", ehp.header.chained_pointer_count());
         assert_eq!(ehp.header.chance2nd_realloc(), 0, "Expected chance2nd_realloc to be 0, but got {}.", ehp.header.chance2nd_realloc());
-        assert_eq!(ehp.header.compression_state(), CompressionState::NONE, "Expected compression_state to be NONE, but got {:?}.", ehp.header.compression_state());
+        assert_eq!(
+            ehp.header.compression_state(),
+            CompressionState::NONE,
+            "Expected compression_state to be NONE, but got {:?}.",
+            ehp.header.compression_state()
+        );
 
         ehp.requested_size = 50;
         ehp.overallocated = 100;
@@ -137,9 +142,24 @@ mod extended_hyperion_pointer_tests {
         assert_eq!(ehp.overallocated, 100, "Expected overallocated to be 100 after modification, but got {}.", ehp.overallocated);
         assert_eq!(ehp.chance2nd_read, 1, "Expected chance2nd_read to be 1 after modification, but got {}.", ehp.chance2nd_read);
         assert_eq!(ehp.header.alloced_by(), Heap, "Expected alloced_by to be Heap after modification, but got {:?}.", ehp.header.alloced_by());
-        assert_eq!(ehp.header.chained_pointer_count(), 12, "Expected chained_pointer_count to be 12 after modification, but got {}.", ehp.header.chained_pointer_count());
-        assert_eq!(ehp.header.chance2nd_realloc(), 1, "Expected chance2nd_realloc to be 1 after modification, but got {}.", ehp.header.chance2nd_realloc());
-        assert_eq!(ehp.header.compression_state(), CompressionState::LZ4, "Expected compression_state to be LZ4 after modification, but got {:?}.", ehp.header.compression_state());
+        assert_eq!(
+            ehp.header.chained_pointer_count(),
+            12,
+            "Expected chained_pointer_count to be 12 after modification, but got {}.",
+            ehp.header.chained_pointer_count()
+        );
+        assert_eq!(
+            ehp.header.chance2nd_realloc(),
+            1,
+            "Expected chance2nd_realloc to be 1 after modification, but got {}.",
+            ehp.header.chance2nd_realloc()
+        );
+        assert_eq!(
+            ehp.header.compression_state(),
+            CompressionState::LZ4,
+            "Expected compression_state to be LZ4 after modification, but got {:?}.",
+            ehp.header.compression_state()
+        );
     }
 
     #[test]

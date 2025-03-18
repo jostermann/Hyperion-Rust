@@ -749,6 +749,7 @@ pub fn scan_put_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
     }
 }
 
+#[allow(unused_assignments)]
 pub fn initialize_data_for_scan(
     ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, mut node_head: *mut NodeHeader, key: &mut u8, jump_point: &mut JumpStates,
 ) {
@@ -856,7 +857,7 @@ pub fn scan_put_phase2(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
                                 ocx.flush_jump_context();
                                 ocx.flush_jump_table_sub_context();
                                 ctx.current_container_offset = ocx.get_root_container().get_container_head_size();
-                                log_to_file(&format!("scan_put_phase2 set current container offset to {}", ctx.current_container_offset));
+                                //log_to_file(&format!("scan_put_phase2 set current container offset to {}", ctx.current_container_offset));
                                 return scan_put(ocx, ctx);
                             }
                         },

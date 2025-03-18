@@ -7,14 +7,14 @@ edition = "2021"
 libc = "0.2.169"
 lz4-sys = "1.11.1"
 bitfield-struct = "0.10.1"
-either = "1.13.0"
 zstd-sys = "2.0.13"
 spin = "0.9.8"
 once_cell = "1.20.3"
 log = "0.4.26"
 rand = "0.9.0"
-cargo-nextest = "0.9.91"
+cargo-nextest = "0.9.29"
 lazy_static = "1.5.0"
+criterion = "0.5.1"
 
 [features]
 compression = []

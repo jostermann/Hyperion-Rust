@@ -3,7 +3,7 @@ use crate::hyperion::components::container::{RootContainerArray, RootContainerEn
 use crate::hyperion::components::node::NodeValue;
 use crate::hyperion::components::return_codes::ReturnCode;
 pub use crate::hyperion::internals::core::log_to_file;
-use crate::hyperion::internals::core::{int_get, int_put, GLOBAL_CONFIG};
+use crate::hyperion::internals::core::{int_get, int_put, int_range, remove, HyperionCallback, GLOBAL_CONFIG};
 use crate::memorymanager::api::{get_next_arena, initialize, teardown};
 use once_cell::sync::Lazy;
 use spin::mutex::Mutex;
@@ -76,11 +76,18 @@ pub fn get_root_container_entry(root_container_array: &mut RootContainerArray, k
     root_container_entry
 }
 
+pub fn shutdown() {
+    GLOBAL_CONFIG.write().header.set_thread_keep_alive(0);
+    teardown();
+}
+
 type PutRef = fn(&mut RootContainerArray, *mut u8, u16, Option<*mut NodeValue>) -> ReturnCode;
 type GetRef = fn(&mut RootContainerArray, *mut u8, u16, &mut *mut NodeValue) -> ReturnCode;
+type DelRef = fn(&mut RootContainerArray, *mut u8, u16) -> ReturnCode;
 
 static PUT_REF_CB: Lazy<RwLock<PutRef>> = Lazy::new(|| RwLock::new(put_no_ppp));
 static GET_REF_CB: Lazy<RwLock<GetRef>> = Lazy::new(|| RwLock::new(get_no_pp));
+static DELETE_REF_CB: Lazy<RwLock<DelRef>> = Lazy::new(|| RwLock::new(delete_no_ppp));
 
 fn put_no_ppp(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, input_value: Option<*mut NodeValue>) -> ReturnCode {
     let root_container_entry = get_root_container_entry(root_container_array, key, key_len);
@@ -94,6 +101,12 @@ fn get_no_pp(root_container_array: &mut RootContainerArray, key: *mut u8, key_le
     int_get(&mut entry, key, key_len, *return_value)
 }
 
+pub fn delete_no_ppp(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16) -> ReturnCode {
+    let root_container_entry = get_root_container_entry(root_container_array, key, key_len);
+    let mut entry = root_container_entry.inner.lock();
+    remove(&mut entry, key, key_len)
+}
+
 pub fn put(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, input_value: Option<*mut NodeValue>) -> ReturnCode {
     PUT_REF_CB.read()(root_container_array, key, key_len, input_value)
 }
@@ -101,3 +114,16 @@ pub fn put(root_container_array: &mut RootContainerArray, key: *mut u8, key_len:
 pub fn get(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, return_value: &mut *mut NodeValue) -> ReturnCode {
     GET_REF_CB.read()(root_container_array, key, key_len, return_value)
 }
+
+pub fn delete(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16) -> ReturnCode {
+    DELETE_REF_CB.read()(root_container_array, key, key_len)
+}
+
+pub fn range(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, cb: HyperionCallback) -> ReturnCode {
+    let root_container_entry = get_root_container_entry(root_container_array, key, key_len);
+    let mut entry = root_container_entry.inner.lock();
+    int_range(&mut entry, key, key_len, cb)
+}
+
+
+

@@ -139,8 +139,8 @@ impl Bin {
     ///
     /// Returns `Some(index)` containing the id of the found free chunk.
     /// Returns `None`, if all chunks are occupied.
-    pub(crate) fn new_chunk_allocation_space_available(&self) -> Option<u8> {
-        apply_simd(&self.chunk_usage_mask, get_index_first_set_bit_4096_2).map(|index: i32| index as u8)
+    pub(crate) fn new_chunk_allocation_space_available(&self) -> Option<u16> {
+        apply_simd(&self.chunk_usage_mask, get_index_first_set_bit_4096_2).map(|index: i32| index as u16)
     }
 
     /// Initializes the Bin-Instance with default values. Copies optional cached bin data from the given `Superbin`.
@@ -172,7 +172,7 @@ impl Bin {
         self.new_chunk_allocation_space_available()
             .map(|candidate| {
                 self.toggle_chunk_usage(candidate as usize);
-                hyperion_pointer.set_chunk_id(candidate as u16);
+                hyperion_pointer.set_chunk_id(candidate);
                 self.header.set_chance2nd_alloc(0);
                 true
             })

@@ -1,4 +1,4 @@
-use hyperion_rust::hyperion::api::{bootstrap, clear_test, get, get_root_container_entry, log_to_file, put};
+use hyperion_rust::hyperion::api::{bootstrap, clear_test, get, get_root_container_entry, log_to_file, put, range};
 use hyperion_rust::hyperion::components::container::initialize_container;
 use hyperion_rust::hyperion::components::container::Container;
 use hyperion_rust::hyperion::components::node::NodeValue;
@@ -8,7 +8,7 @@ use hyperion_rust::memorymanager::api::get_pointer;
 use lazy_static::lazy_static;
 use std::ffi::c_void;
 use std::intrinsics::copy_nonoverlapping;
-use std::ptr::copy;
+use std::ptr::{copy, read_unaligned, write_unaligned};
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
@@ -21,7 +21,7 @@ lazy_static! {
 fn test_initialize_container_001() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let mut root_container_array = bootstrap();
-    let mut key: &str = "00";
+    let key: &str = "00";
     let rce = get_root_container_entry(&mut root_container_array, key.as_ptr(), 2);
     let mut data = rce.inner.lock();
     assert_eq!(data.hyperion_pointer.as_mut().unwrap().superbin_id(), 1);
@@ -218,7 +218,7 @@ fn test_container_split_05() {
     clear_test();
 }
 
-use rand::Rng;
+use rand::{Fill, Rng};
 
 #[test]
 fn test_container_split_06() {
@@ -320,17 +320,18 @@ fn test_container_split_06b() {
 static RANGE_QUERY_COUNTER: AtomicI32 = AtomicI32::new(0);
 
 #[allow(unused_variables)]
-fn range_callback(key: *mut u8, key_len: u16, value: *mut u8) -> i32 {
+fn range_callback(key: *mut u8, key_len: u16, value: *mut u8) -> bool {
     RANGE_QUERY_COUNTER.fetch_add(1, Relaxed);
-    1
+    true
 }
 
-/*#[test]
+#[test]
 fn test_container_split_07() {
+    let _lock = TEST_MUTEX.lock().unwrap();
     RANGE_QUERY_COUNTER.store(0, Relaxed);
     let elements = 65000;
     let mut node_value = NodeValue {
-        v: 0
+        value: 0
     };
     let mut val: [u8; 16] = [0; 16];
     let mut root_container_array = bootstrap();
@@ -340,8 +341,8 @@ fn test_container_split_07() {
     for i in 0..elements {
         unsafe {
             *dest = i;
-            node_value.v = *dest as u64;
-            copy_nonoverlapping(dest, val.as_mut_ptr().add(4) as *mut u16, 2);
+            node_value.value = *dest as u64;
+            copy_nonoverlapping(dest, val.as_mut_ptr().add(4) as *mut u16, 1);
         }
         log_to_file(&format!("i: {}", i));
         put(&mut root_container_array, val.as_mut_ptr(), 8, Some(&mut node_value));
@@ -353,15 +354,17 @@ fn test_container_split_07() {
     for i in 0..elements {
         unsafe {
             *dest = i;
-            copy_nonoverlapping(dest, (val.as_mut_ptr() as *mut u16).add(2), 2);
+            copy_nonoverlapping(dest, (val.as_mut_ptr() as *mut u16).add(2), 1);
         }
         log_to_file(&format!("i: {}", i));
         let return_code = get(&mut root_container_array, val.as_mut_ptr(), 8, &mut p_ret);
 
         assert_eq!(return_code, OK);
-        assert_eq!(unsafe { (*p_ret).v }, unsafe { *dest as u64 });
+        assert_eq!(unsafe { (*p_ret).value }, unsafe { *dest as u64 });
     }
+    val = [0; 16];
 
-
+    assert_eq!(range(&mut root_container_array, val.as_mut_ptr(), 1, range_callback), OK);
+    assert_eq!(RANGE_QUERY_COUNTER.load(Relaxed), elements.into());
     clear_test();
-}*/
+}

@@ -1,7 +1,6 @@
 use crate::hyperion::components::container::DEFAULT_CONTAINER_SIZE;
 use crate::hyperion::components::container::{
-    get_container_head_size, shift_container, Container, ContainerLink, EmbeddedContainer, RootContainerEntry, RootContainerEntryInner,
-    CONTAINER_MAX_EMBEDDED_DEPTH,
+    get_container_head_size, shift_container, Container, ContainerLink, EmbeddedContainer, RootContainerEntryInner, CONTAINER_MAX_EMBEDDED_DEPTH,
 };
 use crate::hyperion::components::context::OperationCommand::{Delete, Get, Put};
 use crate::hyperion::components::context::{
@@ -14,8 +13,8 @@ use crate::hyperion::components::node::{get_sub_node_key, get_top_node_key, Node
 use crate::hyperion::components::node_header::{
     as_raw_compressed_mut, as_sub_node, as_sub_node_mut, as_top_node, as_top_node_mut, call_sub_node, call_top_node, compare_path_compressed_node,
     delete_node, get_child_container_pointer, get_destination_from_top_node_jump_table, get_jump_successor_value, get_node_value,
-    get_offset_child_container, get_offset_jump_successor, get_offset_sub_node, get_offset_sub_node_delta, get_offset_top_node,
-    get_offset_top_node_delta, get_offset_top_node_non_delta, get_successor, NodeHeader,
+    get_offset_child_container, get_offset_jump_successor, get_offset_sub_node, get_offset_sub_node_delta, get_offset_sub_node_non_delta,
+    get_offset_top_node, get_offset_top_node_delta, get_offset_top_node_non_delta, get_successor, NodeHeader,
 };
 use crate::hyperion::components::operation_context::initialize_data_for_scan;
 use crate::hyperion::components::operation_context::ContainerValidTypes::ContainerValid;
@@ -1308,7 +1307,7 @@ static TRIE_STATS: Lazy<RwLock<TrieStats>> = Lazy::new(|| {
     })
 });
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref, dead_code, unused_variables)]
 pub fn stats_container(container: *mut Container) {
     #[cfg(feature = "triestats")]
     {
@@ -1321,8 +1320,10 @@ pub fn stats_container(container: *mut Container) {
 
 pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback) -> ReturnCode {
     let tree_ctx = &mut rqc.stack[rqc.current_stack_depth as usize].expect(ERR_NO_VALUE);
+    log_range(&format!("range_report_container: rqc current_key_offset: {}, stack_depth {}", rqc.current_key_offset, rqc.current_stack_depth));
     let top = unsafe { rqc.current_key.add(rqc.current_key_offset as usize) };
     let sub = unsafe { top.add(1) };
+    log_range(&format!("range_report_container: top {}, sub {}", unsafe { *top }, unsafe { *sub }));
     let mut segment_chain = SegmentChain::default();
     let element_count: usize = if tree_ctx.hyperion_pointer.superbin_id() == 0 {
         get_all_chained_pointer(&mut segment_chain, rqc.arena, &mut tree_ctx.hyperion_pointer) as usize
@@ -1330,8 +1331,10 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
         segment_chain.pointer[0].store(get_pointer(rqc.arena, &mut tree_ctx.hyperion_pointer, 0, 0));
         1
     };
+    log_range(&format!("element count: {}", element_count));
 
     for i in 0..element_count {
+        log_range(&format!("for i: {}", i));
         let container = segment_chain.pointer[i].get() as *mut Container;
         stats_container(container);
         unsafe { *top = segment_chain.chars[i] };
@@ -1339,6 +1342,7 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
         let data_end = unsafe { (*container).size() - (*container).free_bytes() as u32 };
 
         loop {
+            log_range("loop");
             let node_head = unsafe { (container as *mut u8).add(tree_ctx.offset) as *mut NodeHeader };
 
             #[cfg(feature = "triestats")]
@@ -1352,20 +1356,27 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
             if as_top_node(node_head).container_type() == NodeState::TopNode {
                 if as_top_node(node_head).delta() != 0 {
                     unsafe {
+                        log_range(&format!("current top: {}", unsafe { *top }));
+                        log_range(&format!("top delta: {}", as_top_node(node_head).delta()));
                         *top += as_top_node(node_head).delta();
+                        log_range(&format!("set top to: {}", *top));
                     }
                     if !call_top_node(node_head, rqc, cb) {
                         return OK;
                     }
                     tree_ctx.offset += get_offset_top_node_delta(node_head);
+                    log_range(&format!("update1: {}", tree_ctx.offset));
                 } else {
                     unsafe {
-                        *top += *(node_head as *mut u8).add(size_of::<NodeHeader>());
+                        *top = (*top).wrapping_add(*(node_head as *mut u8).add(size_of::<NodeHeader>()));
+                        // *top += *(node_head as *mut u8).add(size_of::<NodeHeader>());
+                        log_range(&format!("set top to: {}", *top));
                     }
                     if !call_top_node(node_head, rqc, cb) {
                         return OK;
                     }
-                    tree_ctx.offset += get_offset_top_node_delta(node_head);
+                    tree_ctx.offset += get_offset_top_node_non_delta(node_head);
+                    log_range(&format!("update2: {}", tree_ctx.offset));
                 }
                 unsafe {
                     *sub = 0;
@@ -1384,7 +1395,10 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
                 }
             } else if as_sub_node(node_head).delta() != 0 {
                 unsafe {
-                    *sub = as_sub_node(node_head).delta();
+                    log_range(&format!("current sub: {}", unsafe { *sub }));
+                    log_range(&format!("sub delta: {}", as_sub_node(node_head).delta()));
+                    *sub += as_sub_node(node_head).delta();
+                    log_range(&format!("set sub to: {}", *sub));
                 }
 
                 #[cfg(feature = "triestats")]
@@ -1395,10 +1409,12 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
                 if !handle_report_sub_node(node_head, rqc, cb) {
                     return OK;
                 }
-                tree_ctx.offset = get_offset_sub_node_delta(node_head);
+                tree_ctx.offset += get_offset_sub_node_delta(node_head);
+                log_range(&format!("update3: {}", tree_ctx.offset));
             } else {
                 unsafe {
                     *sub = *(node_head as *mut u8).add(size_of::<NodeHeader>());
+                    log_range(&format!("set sub to: {}", *sub));
                 }
 
                 #[cfg(feature = "triestats")]
@@ -1411,7 +1427,8 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
                 if !handle_report_sub_node(node_head, rqc, cb) {
                     return OK;
                 }
-                tree_ctx.offset = get_offset_sub_node_delta(node_head);
+                tree_ctx.offset += get_offset_sub_node_non_delta(node_head);
+                log_range(&format!("update4: {}", tree_ctx.offset));
             }
 
             if tree_ctx.offset >= (data_end as usize) {
@@ -1425,6 +1442,7 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, container: *mut EmbeddedContainer) -> ReturnCode {
+    log_range("range_find_first_embedded");
     #[cfg(feature = "triestats")]
     {
         TRIE_STATS.write().num_embedded_container += 1;
@@ -1443,8 +1461,8 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
         look_for_sub = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize + 1) };
     }
 
-    let top = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize) };
-    let sub = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize + 1) };
+    let top = unsafe { rqc.current_key.add(rqc.current_key_offset as usize) };
+    let sub = unsafe { rqc.current_key.add(rqc.current_key_offset as usize + 1) };
     unsafe {
         *top = 0;
     }
@@ -1466,11 +1484,13 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
 
                 if as_top_node(node_head).container_type() == NodeState::TopNode {
                     unsafe {
+                        log_range(&format!("current top: {}", unsafe { *top }));
                         *top = if as_top_node(node_head).delta() != 0 {
                             as_top_node(node_head).delta()
                         } else {
                             *(node_head as *mut u8).add(size_of::<NodeHeader>())
                         };
+                        log_range(&format!("set top to: {}", *top));
                     }
 
                     #[cfg(feature = "triestats")]
@@ -1496,16 +1516,19 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
                         return OK;
                     }
                     embedded_offset += get_offset_top_node(node_head);
+                    log_range(&format!("update1: {}", embedded_offset));
                     unsafe {
                         *sub = 0;
                     }
                 } else {
                     unsafe {
+                        log_range(&format!("current sub: {}", unsafe { *sub }));
                         *sub = if as_sub_node(node_head).delta() != 0 {
                             as_sub_node(node_head).delta()
                         } else {
                             *(node_head as *mut u8).add(size_of::<NodeHeader>())
                         };
+                        log_range(&format!("set sub to: {}", *sub));
                     }
 
                     #[cfg(feature = "triestats")]
@@ -1531,16 +1554,23 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
                                     Link => {
                                         rqc.current_stack_depth += 1;
                                         rqc.current_key_offset += 2;
-                                        unsafe {
-                                            let link = (node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut ContainerLink;
-                                            let tree_ctx = &mut rqc.stack[rqc.current_stack_depth as usize].expect(ERR_NO_VALUE);
-                                            copy_nonoverlapping(
-                                                &mut (*link).ptr as *mut HyperionPointer,
-                                                &mut tree_ctx.hyperion_pointer as *mut HyperionPointer,
-                                                1,
-                                            );
-                                            tree_ctx.offset = 0;
+
+                                        if rqc.stack[rqc.current_stack_depth as usize].is_none() {
+                                            rqc.stack[rqc.current_stack_depth as usize] = Some(TraversalContext {
+                                                offset: 0,
+                                                hyperion_pointer: HyperionPointer::default(),
+                                            });
                                         }
+
+                                        unsafe {
+                                            let src =
+                                                (*((node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut ContainerLink)).ptr;
+                                            if let Some(ref mut context) = rqc.stack[rqc.current_stack_depth as usize] {
+                                                context.hyperion_pointer = src;
+                                            }
+                                        }
+                                        let tree_ctx = &mut rqc.stack[rqc.current_stack_depth as usize].expect(ERR_NO_VALUE);
+                                        tree_ctx.offset = 0;
 
                                         if range_find_first_container(rqc, cb) == OK {
                                             return OK;
@@ -1581,6 +1611,7 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
                         continue;
                     }
                     embedded_offset += get_offset_sub_node(node_head);
+                    log_range(&format!("update2: {}", embedded_offset));
                 }
             },
             _ => {
@@ -1600,14 +1631,15 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, container: *mut EmbeddedContainer) -> ReturnCode {
+    log_range("range_report_embedded");
     #[cfg(feature = "triestats")]
     {
         TRIE_STATS.write().num_embedded_container += 1;
     }
 
     let mut embedded_offset = size_of::<EmbeddedContainer>();
-    let top = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize) };
-    let sub = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize + 1) };
+    let top = unsafe { rqc.current_key.add(rqc.current_key_offset as usize) };
+    let sub = unsafe { top.add(1) };
     unsafe {
         *top = 0;
     }
@@ -1651,7 +1683,7 @@ pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, 
                 if !call_top_node(node_head, rqc, cb) {
                     return OK;
                 }
-                embedded_offset += get_offset_top_node_non_delta(node_head);
+                embedded_offset += get_offset_top_node_delta(node_head);
             }
             unsafe {
                 *sub = 0;
@@ -1669,7 +1701,7 @@ pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, 
             if !handle_report_sub_node(node_head, rqc, cb) {
                 return OK;
             }
-            embedded_offset += get_offset_sub_node_delta(node_head);
+            embedded_offset += get_offset_sub_node_non_delta(node_head);
         } else {
             unsafe {
                 *sub = as_sub_node(node_head).delta();
@@ -1686,7 +1718,7 @@ pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, 
             embedded_offset += get_offset_sub_node_delta(node_head);
         }
 
-        if embedded_offset < unsafe { (*container).size() as usize } {
+        if embedded_offset >= unsafe { (*container).size() as usize } {
             break;
         }
     }
@@ -1694,6 +1726,7 @@ pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, 
 }
 
 pub fn check_path_compressed_key(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext) -> i32 {
+    log_range("check_path_compressed_key");
     let mut tmp_key: [u8; 128] = [0; 128];
     let pc_key_size;
     let pc_key: *mut u8;
@@ -1745,6 +1778,7 @@ enum RangeJumpLabels {
 }
 
 pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallback) -> ReturnCode {
+    log_range("range_find_first_container");
     let mut inscope_top = 0;
     let mut ends_here = false;
     let mut look_for_sub: *mut u8 = null_mut();
@@ -1752,7 +1786,7 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
 
     let mut node_head: *mut NodeHeader = null_mut();
 
-    if rqc.current_key_offset >= rqc.key_len - 2 {
+    if rqc.current_key_offset >= rqc.key_len.wrapping_sub(2) {
         ends_here = true;
     }
 
@@ -1760,8 +1794,8 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
         look_for_sub = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize + 1) };
     }
 
-    let top = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize) };
-    let sub = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize + 1) };
+    let top = unsafe { rqc.current_key.add(rqc.current_key_offset as usize) };
+    let sub = unsafe { rqc.current_key.add(rqc.current_key_offset as usize + 1) };
 
     let mut segment_chain = SegmentChain::default();
 
@@ -1775,10 +1809,9 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
 
     let mut jump_point = RangeJumpLabels::Outer;
     let mut i = 0;
-    let mut jump = false;
-    let container = segment_chain.pointer[i].get() as *mut Container;
+    let mut jump = true;
 
-    loop {
+    'outer: loop {
         if jump {
             jump = false;
         } else {
@@ -1788,6 +1821,7 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
         if i >= element_count {
             break;
         }
+        let container = segment_chain.pointer[i].get() as *mut Container;
 
         match jump_point {
             RangeJumpLabels::Outer => {
@@ -1830,7 +1864,7 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
 
                     jump_point = RangeJumpLabels::Jump;
                     jump = true;
-                    continue;
+                    continue 'outer;
                 } else {
                     unsafe {
                         *sub += if as_sub_node(node_head).delta() != 0 {
@@ -1847,23 +1881,28 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
                                     rqc.do_report = 1;
                                     jump_point = RangeJumpLabels::Report;
                                     jump = true;
-                                    continue;
+                                    continue 'outer;
                                 }
 
                                 match as_sub_node(node_head).child_container() {
                                     Link => {
                                         rqc.current_stack_depth += 1;
                                         rqc.current_key_offset += 2;
-                                        unsafe {
-                                            let link = (node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut ContainerLink;
-                                            let tree_ctx = &mut rqc.stack[rqc.current_stack_depth as usize].expect(ERR_NO_VALUE);
-                                            copy_nonoverlapping(
-                                                &mut (*link).ptr as *mut HyperionPointer,
-                                                &mut tree_ctx.hyperion_pointer as *mut HyperionPointer,
-                                                1,
-                                            );
-                                            tree_ctx.offset = 0;
+                                        if rqc.stack[rqc.current_stack_depth as usize].is_none() {
+                                            rqc.stack[rqc.current_stack_depth as usize] = Some(TraversalContext {
+                                                offset: 0,
+                                                hyperion_pointer: HyperionPointer::default(),
+                                            });
                                         }
+
+                                        unsafe {
+                                            let src =
+                                                (*((node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut ContainerLink)).ptr;
+                                            if let Some(ref mut context) = rqc.stack[rqc.current_stack_depth as usize] {
+                                                context.hyperion_pointer = src;
+                                            }
+                                        }
+                                        tree_ctx.offset = 0;
 
                                         if range_find_first_container(rqc, cb) == OK {
                                             return OK;
@@ -1888,7 +1927,7 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
                                             rqc.current_key_offset -= 2;
                                             jump_point = RangeJumpLabels::Report;
                                             jump = true;
-                                            continue;
+                                            continue 'outer;
                                         }
                                         rqc.current_key_offset -= 2;
                                     },
@@ -1898,13 +1937,13 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
                                 rqc.do_report = 1;
                                 jump_point = RangeJumpLabels::Report;
                                 jump = true;
-                                continue;
+                                continue 'outer;
                             }
                         }
                     } else {
                         jump_point = RangeJumpLabels::Report;
                         jump = true;
-                        continue;
+                        continue 'outer;
                     }
                 }
 
@@ -1913,9 +1952,6 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
                 }
             },
             RangeJumpLabels::Jump => {
-                jump_point = RangeJumpLabels::Inner;
-                jump = false;
-
                 if unsafe { *top == *look_for_top } {
                     if ends_here && look_for_sub.is_null() {
                         rqc.do_report = 1;
@@ -1933,6 +1969,8 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
                 if tree_ctx.offset >= unsafe { (*container).size() as usize } {
                     break;
                 }
+                jump_point = RangeJumpLabels::Inner;
+                jump = true;
             },
             RangeJumpLabels::Report => {
                 jump_point = RangeJumpLabels::Inner;
@@ -1951,6 +1989,7 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
 }
 
 pub fn handle_report_sub_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext, cb: HyperionCallback) -> bool {
+    log_range("handle_report_sub_node");
     if !call_sub_node(node_head, rqc, cb) {
         return false;
     }
@@ -1959,11 +1998,19 @@ pub fn handle_report_sub_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryCo
         Link => {
             rqc.current_stack_depth += 1;
             rqc.current_key_offset += 2;
-            let tree_ctx = &mut rqc.stack[rqc.current_stack_depth as usize].expect(ERR_NO_VALUE) as *mut TraversalContext;
+
+            if rqc.stack[rqc.current_stack_depth as usize].is_none() {
+                rqc.stack[rqc.current_stack_depth as usize] = Some(TraversalContext {
+                    offset: 0,
+                    hyperion_pointer: HyperionPointer::default(),
+                });
+            }
+
             unsafe {
-                let src =
-                    &mut (*((node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut ContainerLink)).ptr as *mut HyperionPointer;
-                copy_nonoverlapping(src, &mut (*tree_ctx).hyperion_pointer as *mut HyperionPointer, 1);
+                let src = (*((node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut ContainerLink)).ptr;
+                if let Some(ref mut context) = rqc.stack[rqc.current_stack_depth as usize] {
+                    context.hyperion_pointer = src;
+                }
             }
             if range_report_container(rqc, cb) == OK {
                 return false;
@@ -1986,7 +2033,7 @@ pub fn handle_report_sub_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryCo
             let pc_key: *mut u8;
             let pc_head = as_raw_compressed_mut(node_head);
             let value: *mut NodeValue;
-            let sub = unsafe { rqc.key_begin.add(rqc.current_key_offset as usize + 1) };
+            let sub = unsafe { rqc.current_key.add(rqc.current_key_offset as usize + 1) };
 
             if unsafe { (*pc_head).value_present() } {
                 pc_key = unsafe { (pc_head as *mut u8).add(size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>()) };
@@ -2007,7 +2054,7 @@ pub fn handle_report_sub_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryCo
                 copy_nonoverlapping(pc_key, sub.add(1), pc_key_size);
             }
             rqc.traversed_leaves += 1;
-            return cb(rqc.current_key, rqc.current_key_offset + pc_key_size as u16 + 2, value as *mut u8);
+            return cb(rqc.current_key, rqc.current_key_offset as u16 + pc_key_size as u16 + 2, value as *mut u8);
         },
         _ => {},
     }
@@ -2045,28 +2092,27 @@ pub fn put_debug(
     traverse_tree(&mut operation_context)
 }
 
-pub fn int_range(root_container_entry: &mut RootContainerEntry, key: *mut u8, key_len: u16, hyperion_callback: HyperionCallback) -> ReturnCode {
+pub fn int_range(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, key_len: u16, hyperion_callback: HyperionCallback) -> ReturnCode {
     let mut tmp_key: [u8; 4096] = [0; 4096];
     let mut rqc: RangeQueryContext = RangeQueryContext {
         key_begin: key,
         current_key: tmp_key.as_mut_ptr(),
-        arena: root_container_entry.inner.lock().arena.unwrap(),
+        arena: root_container_entry.arena.unwrap(),
         current_stack_depth: 0,
         current_key_offset: 0,
-        key_len,
+        key_len: key_len as i16,
         do_report: 0,
         traversed_leaves: 0,
         stack: [None; 128],
     };
     rqc.stack[0] = Some(TraversalContext {
         offset: 0,
-        hyperion_pointer: root_container_entry.inner.lock().hyperion_pointer.unwrap(),
+        hyperion_pointer: root_container_entry.hyperion_pointer.unwrap(),
     });
 
     range_find_first_container(&mut rqc, hyperion_callback);
-    let mut lock = root_container_entry.inner.lock();
-    lock.stats.range_queries += 1;
-    lock.stats.range_queries_leaves = rqc.traversed_leaves;
+    root_container_entry.stats.range_queries += 1;
+    root_container_entry.stats.range_queries_leaves = rqc.traversed_leaves;
     OK
 }
 
@@ -2137,6 +2183,31 @@ pub fn log_to_file(message: &str) {
     }
 
     if !LOG {
+        return;
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(format!("debug{}.log", FD.load(Relaxed))) {
+        let _ = writeln!(file, "{}", message);
+        let _ = file.flush();
+        CURRENT_LINES.store(CURRENT_LINES.load(Relaxed) + 1, Relaxed);
+    } else {
+        eprintln!("Fehler beim Öffnen der Log-Datei");
+    }
+}
+
+static LOG_RANGE: bool = false;
+
+pub fn log_range(message: &str) {
+    if DELETE_OLD_LOGS.load(Relaxed) {
+        DELETE_OLD_LOGS.store(false, Relaxed);
+        delete_log_files().expect("Cannot delete log files");
+    }
+
+    if CURRENT_LINES.load(Relaxed) >= 50000 {
+        FD.fetch_add(1, Relaxed);
+        CURRENT_LINES.store(0, Relaxed);
+    }
+
+    if !LOG_RANGE {
         return;
     }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(format!("debug{}.log", FD.load(Relaxed))) {

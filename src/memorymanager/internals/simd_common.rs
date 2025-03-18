@@ -1,7 +1,7 @@
 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T2};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
+use std::sync::atomic::Ordering::Relaxed;
 use crate::memorymanager::internals::simd_avx2::*;
 use crate::memorymanager::internals::simd_sse4_1::*;
 
@@ -113,7 +113,6 @@ pub(crate) unsafe fn get_index_first_set_bit_256_2(p_256: *const c_void) -> Opti
     if p_256.is_null() {
         return None;
     }
-    let t = p_256 as *mut u8;
 
     if is_x86_feature_detected!("avx2") {
         get_index_first_set_bit_256_avx2_2(p_256)
@@ -237,6 +236,10 @@ pub(crate) unsafe fn a_in_b_256(a: u16, p_b256: *const u16) -> i32 {
     } else {
         a_in_b_256_fallback(a, p_b256)
     }
+}
+
+pub(crate) fn clear_simd() {
+    PSEUDORAND.store(0, Relaxed);
 }
 
 #[cfg(test)]

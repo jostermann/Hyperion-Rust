@@ -8,6 +8,7 @@ use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory
 use crate::memorymanager::internals::compression::{decompress_extended, CompressionState};
 use crate::memorymanager::internals::core::{free_from_pointer, get_chunk, get_new_pointer, reallocate_from_pointer, roundup};
 pub use crate::memorymanager::internals::core::{CONTAINER_MAX_SPLITS, CONTAINER_SPLIT_BITS};
+use crate::memorymanager::internals::simd_common::{apply_simd, clear_simd};
 pub use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 pub use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 pub use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
@@ -36,6 +37,7 @@ pub fn initialize() {
 
 /// Frees all memory allocated by the memory manager and tears down the complete memory manager.
 pub fn teardown() {
+    clear_simd();
     for i in 0..NUM_ARENAS {
         let arena: &mut Arena = unsafe { get_arena_mut(i as u32).as_mut().unwrap() };
         let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut arena.lock();
@@ -115,7 +117,7 @@ pub fn get_all_chained_pointer(segment_chain: &mut SegmentChain, arena: *mut Are
     let mut elements: usize = 0;
 
     unsafe {
-        let chain_head: *mut ExtendedHyperionPointer = base.add(hyperion_pointer.chunk_id() as usize);
+        let mut chain_head: *mut ExtendedHyperionPointer = base.add(hyperion_pointer.chunk_id() as usize);
 
         if (*chain_head).header.chained_pointer_count() > 0 {
             let increment: usize = 256 / (1usize << CONTAINER_SPLIT_BITS);
@@ -130,6 +132,7 @@ pub fn get_all_chained_pointer(segment_chain: &mut SegmentChain, arena: *mut Are
                     (*chain_head).chance2nd_read = 0;
                     elements += 1;
                 }
+                chain_head = chain_head.add(1);
             }
         } else {
             segment_chain.chars[elements] = 0;

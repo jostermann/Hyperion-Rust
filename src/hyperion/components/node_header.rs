@@ -30,7 +30,6 @@ use crate::hyperion::internals::errors::{
 };
 use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 use std::cmp::Ordering;
-use std::ffi::c_void;
 use std::ptr::{copy, copy_nonoverlapping, null_mut, read_unaligned, write_bytes, write_unaligned};
 
 pub const MAX_KEY_LENGTH_PATH_COMPRESSION: i32 = 128;
@@ -241,10 +240,18 @@ pub fn get_offset_sub_node(node_head: *mut NodeHeader) -> usize {
 
 /// Returns the offset of the next node starting at this delta encoded [`SubNode`].
 /// # Safety
-/// This function is intended for use on [`TopNode`]. Calling this function on a [`SubNode`] will result in undefined behavior.
+/// This function is intended for use on [`SubNode`]. Calling this function on a [`TopNode`] will result in undefined behavior.
 #[inline]
 pub fn get_offset_sub_node_delta(node_head: *mut NodeHeader) -> usize {
-    size_of::<NodeHeader>() + get_jump_overhead(node_head) + get_child_link_size(node_head)
+    size_of::<NodeHeader>() + get_leaf_size(node_head) + get_child_link_size(node_head)
+}
+
+/// Returns the offset of the next node starting at this non-delta encoded [`SubNode`].
+/// # Safety
+/// This function is intended for use on [`SubNode`]. Calling this function on a [`TopNode`] will result in undefined behavior.
+#[inline]
+pub fn get_offset_sub_node_non_delta(node_head: *mut NodeHeader) -> usize {
+    get_offset_sub_node_delta(node_head) + size_of::<u8>()
 }
 
 /// Returns the offset of the node's value from the node's base address.
@@ -374,9 +381,9 @@ pub fn register_jump_context(node_head: *mut NodeHeader, ctx: &mut ContainerTrav
 
 pub fn call_top_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext, hyperion_callback: HyperionCallback) -> bool {
     match as_top_node(node_head).type_flag() {
-        LeafNodeEmpty => hyperion_callback(rqc.current_key, rqc.current_key_offset + 1, null_mut()),
+        LeafNodeEmpty => hyperion_callback(rqc.current_key, rqc.current_key_offset as u16 + 1, null_mut()),
         LeafNodeWithValue => unsafe {
-            hyperion_callback(rqc.current_key, rqc.current_key_offset + 1, (node_head as *mut u8).add(get_offset_node_value(node_head)))
+            hyperion_callback(rqc.current_key, rqc.current_key_offset as u16 + 1, (node_head as *mut u8).add(get_offset_node_value(node_head)))
         },
         Invalid | InnerNode => true,
     }
@@ -384,11 +391,11 @@ pub fn call_top_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext, hy
 
 pub fn call_sub_node(node_head: *mut NodeHeader, range_query_context: &mut RangeQueryContext, hyperion_callback: HyperionCallback) -> bool {
     match as_sub_node(node_head).type_flag() {
-        LeafNodeEmpty => hyperion_callback(range_query_context.current_key, range_query_context.current_key_offset + 2, null_mut()),
+        LeafNodeEmpty => hyperion_callback(range_query_context.current_key, range_query_context.current_key_offset as u16 + 2, null_mut()),
         LeafNodeWithValue => unsafe {
             hyperion_callback(
                 range_query_context.current_key,
-                range_query_context.current_key_offset + 2,
+                range_query_context.current_key_offset as u16 + 2,
                 (node_head as *mut u8).add(get_offset_node_value(node_head)),
             )
         },
@@ -691,6 +698,7 @@ fn resize_root_container(ocx: &mut OperationContext, delta: i32, root_size: u32,
 /// 3. Linking the newly created container to the root container.
 /// 4. Deleting the embedded container from the root container.
 /// 5. Resizing and shrinking the root container to fit.
+#[allow(unused_assignments)]
 pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
     log_to_file("eject_container");
     assert!(ocx.embedded_traversal_context.embedded_container_depth > 0);
@@ -737,18 +745,6 @@ pub fn add_embedded_container(mut node: *mut NodeHeader, ocx: &mut OperationCont
     ocx.next_container_pointer = None;
     ocx.embedded_traversal_context.next_embedded_container = Some(next_embedded_ptr);
     update_space(size_of::<EmbeddedContainer>() as i16, ocx, ctx);
-
-    unsafe {
-        let base_ptr: *mut u8 = node as *mut u8;
-        ocx.embedded_traversal_context.next_embedded_container = Some(base_ptr.add(offset_child_container) as *mut EmbeddedContainer);
-
-        if let Some(next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container.take() {
-            wrap_shift_container(ocx.get_root_container_pointer(), next_embedded_container as *mut u8, size_of::<EmbeddedContainer>());
-            ocx.embedded_traversal_context.next_embedded_container = Some(next_embedded_container);
-        } else {
-            panic!("{}", ERR_NO_NEXT_CONTAINER)
-        }
-    }
 }
 
 pub enum EmbedLinkCommands {
@@ -790,7 +786,7 @@ fn get_operation(node_head: *mut NodeHeader, ocx: &mut OperationContext, size_pc
             let embedded_stack = ocx.embedded_traversal_context.embedded_stack.as_mut().expect(ERR_EMPTY_EMB_STACK);
             let embedded_size = embedded_stack[0].as_mut().expect(ERR_EMPTY_EMB_STACK_POS).borrow_mut().size() as i32;
 
-            if embedded_size < container_limit && size_pc < MAX_KEY_LENGTH_PATH_COMPRESSION {
+            if embedded_size + size_pc < (GLOBAL_CONFIG.read().header.container_embedding_high_watermark() as i32) && size_pc < MAX_KEY_LENGTH_PATH_COMPRESSION {
                 // The node can be stored as path compressed node
                 return CreatePathCompressedNode;
             }
@@ -803,7 +799,7 @@ fn get_operation(node_head: *mut NodeHeader, ocx: &mut OperationContext, size_pc
         }
     }
 
-    if sub_node.child_container() == ChildLinkType::None && size_pc < 16 && root_size < 2 * container_limit {
+    if sub_node.child_container() == ChildLinkType::None && size_pc < 16 && root_size < (2 * GLOBAL_CONFIG.read().header.container_embedding_high_watermark() as i32) {
         return CreatePathCompressedNode;
     }
 
@@ -981,6 +977,7 @@ pub fn get_child_container_pointer(
     // The embedded container was ejected
     // The child container pointer must be retrieved from the root container
     if let Some(ref mut next_ptr) = ocx.next_container_pointer {
+        log_to_file("update next container pointer");
         let value = unsafe { *((node_head as *mut u8).add(get_offset_child_container(node_head))) };
         log_to_file(&format!("root container offset value: {}", value));
         *next_ptr = unsafe { (node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut HyperionPointer };
@@ -1011,6 +1008,7 @@ pub struct NodeCreationOptions {
 /// The options for a node creations can be specified by using [`NodeCreationOptions`].
 /// # Safety
 /// - `node_head` must be a valid, aligned pointer for reading and writing.
+#[allow(unused_assignments)]
 pub fn create_node(
     mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, options: NodeCreationOptions,
 ) -> *mut NodeHeader {
@@ -1658,7 +1656,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                         (size_of::<EmbeddedContainer>()
                             + (size_of::<NodeHeader>() + 1) * 2
                             + value_present * size_of::<NodeValue>()
-                            + remaining_partial_key) as u8,
+                            + 1 + remaining_partial_key) as u8,
                     );
                 } else {
                     panic!("{}", ERR_NO_NEXT_CONTAINER)

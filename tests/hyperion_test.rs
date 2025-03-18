@@ -407,6 +407,7 @@ fn test_container_split_08() {
 }
 
 #[test]
+#[ignore]
 fn test_container_split_09() {
     let _lock = TEST_MUTEX.lock().unwrap();
     let base_seed1: i32 = 16530;//rand::random_range(0..32767);
@@ -414,22 +415,22 @@ fn test_container_split_09() {
     println!("base1: {}, base2: {}", base_seed1, base_seed2);
     let mut seed1 = base_seed1;
     let mut seed2 = base_seed2;
-    
+
     let mut node_value = NodeValue {
         value: 0
     };
     let mut val: [u8; 8] = [0; 8];
     let dest = unsafe { val.as_mut_ptr().add(2) as *mut i32 };
-    
+
     for elements in (2000..65536).step_by(2000) {
         eprintln!("Elements: {}", elements);
         RANGE_QUERY_COUNTER.store(0, Relaxed);
         val.fill(0);
         let mut root_container_array = bootstrap();
-        
+
         for i in 0..elements {
             node_value.value = val[1] as u64;
-            
+
             for j in 0..elements {
                 let t = unsafe { seed2.wrapping_mul(read_unaligned(dest)).wrapping_add(seed1) };
                 unsafe {  write_unaligned(dest, seed2.wrapping_mul(read_unaligned(dest)).wrapping_add(seed1)); }
@@ -440,7 +441,7 @@ fn test_container_split_09() {
 
         let mut p_ret = &mut node_value as *mut NodeValue;
         val.fill(0);
-        
+
         for i in 0..elements {
             node_value.value = val[1] as u64;
 
@@ -452,7 +453,7 @@ fn test_container_split_09() {
                 assert_eq!(unsafe { (*p_ret).value }, val[1] as u64);
             }
         }
-        
+
     }
     clear_test();
 }

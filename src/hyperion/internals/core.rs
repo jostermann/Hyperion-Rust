@@ -97,16 +97,16 @@ pub fn get_global_cfg() -> *mut GlobalConfiguration {
 /// - a HyperionPointer to the newly created container.
 pub fn initialize_ejected_container(arena: &mut Arena, required_size: u32) -> HyperionPointer {
     let container_size_increment = GLOBAL_CONFIG.read().header.container_size_increment();
-    let target_size: usize = (((required_size as usize - DEFAULT_CONTAINER_SIZE + get_container_head_size()) / container_size_increment as usize)
-        + 1)
-        * container_size_increment as usize
-        + DEFAULT_CONTAINER_SIZE;
+    let target_size = (((required_size.wrapping_sub(DEFAULT_CONTAINER_SIZE as u32).wrapping_add(get_container_head_size() as u32)) 
+        / container_size_increment as u32) + 1)
+        .wrapping_mul(container_size_increment as u32)
+        + DEFAULT_CONTAINER_SIZE as u32;
     log_to_file(&format!("initialize_ejected_container: target size: {}", target_size));
-    let mut pointer: HyperionPointer = malloc(arena, target_size);
+    let mut pointer: HyperionPointer = malloc(arena, target_size as usize);
     let container: *mut Container = get_pointer(arena, &mut pointer, 1, 0) as *mut Container;
     unsafe {
-        (*container).set_size(target_size as u32);
-        (*container).set_free_size_left((target_size - (*container).get_container_head_size()) as u32);
+        (*container).set_size(target_size);
+        (*container).set_free_size_left(target_size - (*container).get_container_head_size() as u32);
     }
     pointer
 }

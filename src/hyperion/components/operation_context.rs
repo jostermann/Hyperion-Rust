@@ -17,7 +17,7 @@ use crate::hyperion::components::node_header::{
     as_sub_node, as_top_node, as_top_node_mut, compare_path_compressed_node, create_child_container, create_node, create_path_compressed_context,
     create_top_node_jump_table, get_child_container_pointer, get_destination_from_top_node_jump_table, get_jump_successor_value, get_offset,
     get_offset_jump_successor, get_offset_node_value, get_offset_sub_node, get_offset_top_node, get_successor, register_jump_context, set_node_value,
-    update_path_compressed_context, NodeCreationOptions, NodeHeader,
+    update_path_compressed_node, NodeCreationOptions, NodeHeader,
 };
 use crate::hyperion::components::operation_context::JumpStates::{JumpPoint1, JumpPoint2, NoJump};
 use crate::hyperion::components::return_codes::ReturnCode;
@@ -1042,7 +1042,7 @@ fn handle_equal_keys(ocx: &mut OperationContext, ctx: &mut ContainerTraversalCon
             },
             PathCompressed => {
                 if compare_path_compressed_node(node_head, ocx) {
-                    update_path_compressed_context(node_head, ocx, ctx);
+                    update_path_compressed_node(node_head, ocx, ctx);
                 } else {
                     create_path_compressed_context(node_head, ocx);
                     create_child_container(node_head, ocx, ctx);

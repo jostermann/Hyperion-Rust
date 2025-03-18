@@ -515,7 +515,7 @@ pub fn delete_node(node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: 
 /// Updates the [`PathCompressedEjectionContext`] in [`OperationContext`] based on the contents of the given node.
 /// # Safety
 /// - `node_head` must be a valid, aligned pointer for reading and writing.
-pub fn update_path_compressed_context(
+pub fn update_path_compressed_node(
     node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext,
 ) -> *mut NodeHeader {
     log_to_file("update_path_compressed_node");
@@ -524,7 +524,7 @@ pub fn update_path_compressed_context(
     let mut value: *mut u8 = unsafe { (pc_node as *mut u8).add(size_of::<PathCompressedNodeHeader>()) };
     let mut node_head = node_head;
 
-    if unsafe { *pc_node }.value_present() {
+    if !unsafe { *pc_node }.value_present() {
         node_head = new_expand(ocx, ctx, size_of::<NodeValue>() as u32);
         unsafe {
             wrap_shift_container(ocx.get_root_container_pointer(), value, size_of::<NodeValue>());

@@ -292,7 +292,7 @@ fn update_embedded_container(usage_delta: i16, ocx: &mut OperationContext) {
             }
         }
         if let Some(emb_container) = emb_stack[0].as_mut() {
-            assert!(emb_container.borrow_mut().size() < (ocx.get_root_container().size() as u8));
+            assert!((emb_container.borrow_mut().size() as u32) < ocx.get_root_container().size());
         }
     }
 }

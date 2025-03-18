@@ -128,17 +128,17 @@ pub(crate) unsafe fn get_index_first_set_bit_4096(p_4096: *const c_void) -> i32 
     const BLOCKS_SIZE: usize = 32;
     const BITS_PER_BLOCK: usize = 256;
     const BLOCKS: usize = 4096 / BITS_PER_BLOCK;
-    let offset: usize = PSEUDORAND.load(Ordering::Relaxed);
+    let offset: usize = PSEUDORAND.load(Relaxed);
 
     for i in 0..BLOCKS {
         let block = (i + offset) & (BLOCKS - 1);
         let res: i32 = get_index_first_set_bit_256(p_4096.add(block * BLOCKS_SIZE));
         if res != -1 {
-            PSEUDORAND.store(block, Ordering::Relaxed);
+            PSEUDORAND.store(block, Relaxed);
             return (block * BITS_PER_BLOCK) as i32 + res;
         }
     }
-    PSEUDORAND.store(0, Ordering::Relaxed);
+    PSEUDORAND.store(0, Relaxed);
     -1
 }
 
@@ -147,17 +147,17 @@ pub(crate) unsafe fn get_index_first_set_bit_4096_2(p_4096: *const c_void) -> Op
     const BLOCKS_SIZE: usize = 32;
     const BITS_PER_BLOCK: usize = 256;
     const BLOCKS: usize = 4096 / BITS_PER_BLOCK;
-    let offset: usize = PSEUDORAND.load(Ordering::Relaxed);
+    let offset: usize = PSEUDORAND.load(Relaxed);
 
     for i in 0..BLOCKS {
         let block = (i + offset) & (BLOCKS - 1);
         let res: Option<i32> = get_index_first_set_bit_256_2(p_4096.add(block * BLOCKS_SIZE));
         if let Some(result) = res {
-            PSEUDORAND.store(block, Ordering::Relaxed);
+            PSEUDORAND.store(block, Relaxed);
             return Some((block * BITS_PER_BLOCK) as i32 + result);
         }
     }
-    PSEUDORAND.store(0, Ordering::Relaxed);
+    PSEUDORAND.store(0, Relaxed);
     None
 }
 

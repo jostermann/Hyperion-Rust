@@ -362,7 +362,7 @@ fn test_container_split_07() {
     val = [0; 16];
 
     assert_eq!(range(&mut root_container_array, val.as_mut_ptr(), 1, range_callback), OK);
-    assert_eq!(RANGE_QUERY_COUNTER.load(Relaxed), elements.into());
+    assert_eq!(RANGE_QUERY_COUNTER.load(Relaxed), elements as i32);
     clear_test();
 }
 
@@ -413,7 +413,7 @@ fn test_container_split_09() {
     let base_seed1: i32 = 16530;//rand::random_range(0..32767);
     let base_seed2: i32 = 21062;//rand::random_range(0..32767);
     println!("base1: {}, base2: {}", base_seed1, base_seed2);
-    let mut seed1 = base_seed1;
+    let seed1 = base_seed1;
     let mut seed2 = base_seed2;
 
     let mut node_value = NodeValue {
@@ -432,7 +432,6 @@ fn test_container_split_09() {
             node_value.value = val[1] as u64;
 
             for j in 0..elements {
-                let t = unsafe { seed2.wrapping_mul(read_unaligned(dest)).wrapping_add(seed1) };
                 unsafe {  write_unaligned(dest, seed2.wrapping_mul(read_unaligned(dest)).wrapping_add(seed1)); }
                 log_to_file(&format!("i: {}, j: {}", i, j));
                 put(&mut root_container_array, val.as_mut_ptr(), 8, Some(&mut node_value));

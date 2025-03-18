@@ -16,10 +16,10 @@ use crate::memorymanager::api::{get_pointer, malloc, Arena, HyperionPointer};
 pub const CONTAINER_MAX_EMBEDDED_DEPTH: usize = 28;
 
 /// Default size of a container. All new containers are initialized to this size.
-pub const DEFAULT_CONTAINER_SIZE: usize = 32;
+pub const DEFAULT_CONTAINER_SIZE: u32 = 32;
 
 /// The maximum amount of free bytes in all container instances. If a container exceeds this limit, the container is reallocated.
-pub const CONTAINER_MAX_FREE_BYTES: usize = DEFAULT_CONTAINER_SIZE;
+pub const CONTAINER_MAX_FREE_BYTES: i32 = DEFAULT_CONTAINER_SIZE as i32;
 
 /// Container type, storing nodes.
 #[bitfield(u32)]
@@ -37,13 +37,13 @@ pub struct Container {
     /// If the split process is aborted for the above reasons, the split delay is increased, which further increases the size required for another
     /// splitting attempt.
     #[bits(2)]
-    pub split_delay: u8,
+    pub split_delay: usize,
 
     /// The jump table value of this container.
     ///
     /// The jump table field can be used to address up to 7 container jump tables, with each container jump table storing up to 7 entries.
     #[bits(3)]
-    pub jump_table: u8,
+    pub jump_table: usize,
 
     /// The amount of free bytes in this container.
     ///
@@ -66,7 +66,7 @@ impl Container {
     /// assert_eq!(container.get_jump_table_size(), 56);
     /// ```
     pub fn get_jump_table_size(&self) -> usize {
-        self.jump_table() as usize * size_of::<ContainerJumpTable>()
+        self.jump_table() * size_of::<ContainerJumpTable>()
     }
 
     /// Returns the total amount of jump table entries referenced to by this container.
@@ -81,7 +81,7 @@ impl Container {
     /// ```
     #[inline]
     pub fn get_jump_table_entry_count(&self) -> usize {
-        self.jump_table() as usize * CONTAINER_JUMP_TABLE_ENTRIES
+        self.jump_table() * CONTAINER_JUMP_TABLE_ENTRIES
     }
 
     /// Returns a pointer to the first jump table entry referenced to by this container.
@@ -139,7 +139,7 @@ impl Container {
     /// ```
     pub fn increment_container_size(&mut self, required_minimum: u32) -> u32 {
         log_to_file(&format!("increment_container_size: {}", required_minimum));
-        let container_increment = GLOBAL_CONFIG.read().header.container_size_increment() as u32;
+        let container_increment = GLOBAL_CONFIG.read().header.container_size_increment();
         self.set_size(self.size() + required_minimum.div_ceil(container_increment) * container_increment);
         self.size()
     }
@@ -154,7 +154,7 @@ impl Container {
 
         // Perform a binary search like scan
         let first_match: usize = unsafe {
-            let items: usize = CONTAINER_JUMP_TABLE_ENTRIES * self.jump_table() as usize;
+            let items: usize = CONTAINER_JUMP_TABLE_ENTRIES * self.jump_table();
             let mid: usize = items / 2;
             let mid_entry: *mut ContainerJumpTableEntry = jt_entry.add(mid);
             // Since the jump table entries are sorted in ascending order in respect to their key, the scan can be limited to the first half in some cases
@@ -284,7 +284,7 @@ fn update_jump_table(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut Con
 
 fn update_embedded_container(usage_delta: i16, ocx: &mut OperationContext) {
     if let Some(emb_stack) = ocx.embedded_traversal_context.embedded_stack.as_mut() {
-        for container in emb_stack.iter_mut().take(ocx.embedded_traversal_context.embedded_container_depth as usize).rev() {
+        for container in emb_stack.iter_mut().take(ocx.embedded_traversal_context.embedded_container_depth).rev() {
             if let Some(current_em_container) = container.as_mut().map(|c: &mut AtomicEmbContainer| c.borrow_mut()) {
                 let current_size: i16 = current_em_container.size() as i16;
                 log_to_file(&format!("update_embedded_container: current size: {} + usage_delta: {}", current_size, usage_delta));
@@ -342,11 +342,11 @@ pub fn get_jump_table_pointer(container: *mut Container) -> *mut ContainerJumpTa
 }
 
 pub fn initialize_container(arena: *mut Arena) -> HyperionPointer {
-    let mut container_pointer: HyperionPointer = malloc(arena, DEFAULT_CONTAINER_SIZE);
+    let mut container_pointer: HyperionPointer = malloc(arena, DEFAULT_CONTAINER_SIZE as usize);
     let container: *mut Container = get_pointer(arena, &mut container_pointer, 1, 0) as *mut Container;
     unsafe {
-        (*container).set_size(DEFAULT_CONTAINER_SIZE as u32);
-        (*container).set_free_size_left(DEFAULT_CONTAINER_SIZE as u32 - (*container).get_container_head_size() as u32);
+        (*container).set_size(DEFAULT_CONTAINER_SIZE);
+        (*container).set_free_size_left(DEFAULT_CONTAINER_SIZE - (*container).get_container_head_size() as u32);
     }
     container_pointer
 }
@@ -394,8 +394,8 @@ mod test_container_header {
     fn test_container_retrieval() {
         let size: u32 = 0b1001001011100010110;
         let free_bytes: u8 = 0b00010101;
-        let jump_table: u8 = 0b101;
-        let split_delay: u8 = 0b01;
+        let jump_table: usize = 0b101;
+        let split_delay: usize = 0b01;
 
         let container: Container =
             Container::new().with_size(size).with_free_bytes(free_bytes).with_jump_table(jump_table).with_split_delay(split_delay);

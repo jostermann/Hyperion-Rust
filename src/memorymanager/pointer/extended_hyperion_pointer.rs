@@ -19,7 +19,7 @@
 
 use bitfield_struct::bitfield;
 
-use crate::memorymanager::internals::allocator::{auto_free_memory, AllocatedBy};
+use crate::memorymanager::internals::allocator::AllocatedBy;
 use crate::memorymanager::internals::compression::CompressionState;
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 

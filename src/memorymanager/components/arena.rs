@@ -51,8 +51,8 @@ pub struct ArenaInner {
 }
 
 impl ArenaInner {
-    pub(crate) fn initialize_superbin(&mut self, index: u16) {
-        self.superbins[index as usize].initialize(index);
+    pub(crate) fn initialize_superbin(&mut self, index: usize) {
+        self.superbins[index].initialize(index as u16);
     }
 
     pub(crate) fn get_superbin_ref(&mut self, hyperion_pointer: &mut HyperionPointer) -> &mut Superbin {

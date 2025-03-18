@@ -6,7 +6,7 @@ pub struct PathCompressedNodeHeader {
     pub value_present: bool,
 
     #[bits(7)]
-    pub size: u8,
+    pub size: usize,
 }
 
 impl PathCompressedNodeHeader {
@@ -25,7 +25,7 @@ mod test_path_compressed_node {
 
     #[test]
     fn test_compressed_header() {
-        let size: u8 = 0b0101101;
+        let size: usize = 0b0101101;
         let pc_node: PathCompressedNodeHeader = PathCompressedNodeHeader::new().with_size(size).with_value_present(true);
 
         assert_eq!(size_of_val(&pc_node), 1);

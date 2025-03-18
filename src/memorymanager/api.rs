@@ -31,7 +31,7 @@ pub fn initialize() {
         let inner: &mut spin::mutex::MutexGuard<ArenaInner> = &mut arena.lock();
         inner.compression_cache = AtomicMemoryPointer::new();
         inner.compression_iterator = 1;
-        (0..SUPERBIN_ARRAY_MAXSIZE).for_each(|j| inner.initialize_superbin(j as u16));
+        (0..SUPERBIN_ARRAY_MAXSIZE).for_each(|j| inner.initialize_superbin(j));
     }
 }
 

@@ -1,7 +1,8 @@
 use bitfield_struct::bitfield;
 
 use crate::memorymanager::components::superbin::Superbin;
-use crate::memorymanager::internals::allocator::{auto_allocate_memory, auto_free_memory, AllocatedBy};
+use crate::memorymanager::internals::allocator::{allocate_mmap, auto_allocate_memory, auto_free_memory, AllocatedBy};
+use crate::memorymanager::internals::allocator::AllocatedBy::Mmap;
 use crate::memorymanager::internals::compression::CompressionState;
 use crate::memorymanager::internals::simd_common::{all_bits_set_4096, apply_simd, count_set_bits, get_index_first_set_bit_4096_2};
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
@@ -52,7 +53,7 @@ impl Default for Bin {
         Bin {
             header: BinHeader::new()
                 .with_compression_state(CompressionState::NONE)
-                .with_allocated_by(AllocatedBy::Mmap)
+                .with_allocated_by(Mmap)
                 .with_chance2nd_read(0)
                 .with_chance2nd_alloc(0),
             chunks: AtomicMemoryPointer::new(),
@@ -150,7 +151,7 @@ impl Bin {
     /// cache in the superbin is reset. If there is no cached data, a new memory area is allocated
     /// for the chunks and the allocation type in the header is updated.
     pub(crate) fn initialize(&mut self, superbin: &mut Superbin) {
-        self.set_flags(CompressionState::NONE, AllocatedBy::Mmap as u8, 0, 0);
+        self.set_flags(CompressionState::NONE, Mmap as u8, 0, 0);
         self.chunks = AtomicMemoryPointer::new();
         self.chunk_usage_mask.fill(u32::MAX);
 
@@ -158,8 +159,9 @@ impl Bin {
             self.chunks.clone_from(&superbin.bin_cache);
             superbin.clear_cache();
         } else {
-            let allocated_by: AllocatedBy = unsafe { auto_allocate_memory(&mut self.chunks, superbin.header.size_of_bin() as usize * BIN_ELEMENTS) };
-            self.header.set_allocated_by(allocated_by);
+            self.chunks = AtomicMemoryPointer::new();
+            self.chunks.store(unsafe { allocate_mmap(superbin.header.size_of_bin() as usize * BIN_ELEMENTS) });
+            self.header.set_allocated_by(Mmap);
         }
     }
 

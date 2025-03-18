@@ -166,7 +166,7 @@ pub struct EmbeddedTraversalContext {
     pub next_embedded_container: Option<*mut EmbeddedContainer>,
     pub embedded_stack: Option<[Option<AtomicEmbContainer>; CONTAINER_MAX_EMBEDDED_DEPTH]>,
     pub next_embedded_container_offset: i32,
-    pub embedded_container_depth: i32,
+    pub embedded_container_depth: usize,
     pub root_container_pointer: *mut HyperionPointer,
 }
 

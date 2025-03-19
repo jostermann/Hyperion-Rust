@@ -699,9 +699,11 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
                 node_head = insert_jump_successor(ocx, ctx, jump_value);
             }
         }
+        
         if skip_first {
             skip_first = false;
         }
+        black_box(skip_first);
 
         if !skip_all {
             log_to_file("jumped to LABEL_SAFE2");
@@ -763,8 +765,8 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
     let mut node_head: Option<*mut NodeHeader> = None;
     let mut scan_meta_cb: ScanMetaFunction = scan_meta;
     let mut scan_put_cb: ScanPutFunction = scan_put;
-
-    loop {
+    
+    while ocx.header.next_container_valid() != ContainerValidTypes::Invalid {
         let mut ctx = ContainerTraversalContext {
             first_char: unsafe { *(ocx.key.unwrap()) },
             second_char: unsafe { *(ocx.key.unwrap().add(1)) },
@@ -824,8 +826,8 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
                     if ocx.get_root_container().size() <= 2 * DEFAULT_CONTAINER_SIZE && ocx.header.next_container_valid() == ContainerValid {
                         if ocx.container_injection_context.root_container.is_some()
                             && ((ocx.get_root_container().size() as i32
-                                + unsafe { *(ocx.container_injection_context.root_container.unwrap()) }.size() as i32)
-                                < (GLOBAL_CONFIG.read().container_embedding_limit as i32))
+                            + unsafe { *(ocx.container_injection_context.root_container.unwrap()) }.size() as i32)
+                            < (GLOBAL_CONFIG.read().container_embedding_limit as i32))
                         {
                             inject_container(ocx);
                             ocx.container_injection_context.root_container = None;
@@ -856,39 +858,25 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
             }
         } else {
             ocx.header.set_next_container_valid(ContainerValidTypes::Invalid);
-
-            match ocx.header.command() {
-                Put => {
-                    ctx.current_container_offset = size_of::<EmbeddedContainer>();
-                    let return_code = scan_put_embedded(ocx, &mut ctx);
-                    if return_code != OK {
-                        return return_code;
-                    }
-                    ocx.embedded_traversal_context.next_embedded_container_offset += ctx.current_container_offset as i32;
-                },
-                Get => {
-                    ctx.current_container_offset = size_of::<EmbeddedContainer>();
-                    let return_code = scan_meta_embedded(ocx, &mut ctx, &mut node_head);
-                    if return_code != OK {
-                        return return_code;
-                    }
-                    if ctx.header.end_operation() {
-                        return get_node_value(node_head.unwrap(), ocx);
-                    }
-                    ocx.embedded_traversal_context.next_embedded_container_offset += ctx.current_container_offset as i32;
-                },
-                Delete => {
-                    ctx.current_container_offset = size_of::<EmbeddedContainer>();
-                    let return_code = scan_meta_embedded(ocx, &mut ctx, &mut node_head);
-                    if return_code != OK {
-                        return return_code;
-                    }
-                    if ctx.header.end_operation() {
-                        return delete_node(node_head.unwrap(), ocx, &mut ctx);
-                    }
-                    ocx.embedded_traversal_context.next_embedded_container_offset += ctx.current_container_offset as i32;
-                },
-                _ => {},
+            ctx.current_container_offset = size_of::<EmbeddedContainer>();
+            
+            let return_code = match ocx.header.command() {
+                Put => scan_put_embedded(ocx, &mut ctx),
+                Get | Delete => scan_meta_embedded(ocx, &mut ctx, &mut node_head),
+                _ => OK
+            };
+            ocx.embedded_traversal_context.next_embedded_container_offset += ctx.current_container_offset as i32;
+            
+            if return_code != OK {
+                return return_code;
+            }
+            
+            if ctx.header.end_operation() {
+                match ocx.header.command() {
+                    Get => return get_node_value(node_head.expect(ERR_NO_NODE), ocx),
+                    Delete => return delete_node(node_head.expect(ERR_NO_NODE), ocx, &mut ctx),
+                    _ => {}
+                }
             }
         }
 
@@ -896,10 +884,6 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
             unsafe { *key = key.add(2) };
         }
         ocx.key_len_left -= 2;
-
-        if ocx.header.next_container_valid() == ContainerValidTypes::Invalid {
-            break;
-        }
     }
     OK
 }
@@ -1202,9 +1186,7 @@ pub fn perform_container_injection(
             new_size as usize,
             ocx.chained_pointer_hook,
         ));
-        /*ocx.container_injection_context.container_pointer = Some(
-            &mut reallocate(ocx.get_arena(), unsafe { ocx.container_injection_context.container_pointer.unwrap().as_mut().unwrap() }, new_size as usize, ocx.chained_pointer_hook) as *mut HyperionPointer
-        );*/
+
         ocx.container_injection_context.root_container =
             Some(get_pointer(ocx.get_arena(), ocx.container_injection_context.container_pointer.expect(ERR_NO_POINTER), 1, ocx.chained_pointer_hook)
                 as *mut Container);
@@ -1296,10 +1278,15 @@ pub fn stats_container(container: *mut Container) {
 pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback) -> ReturnCode {
     let tree_ctx = &mut rqc.stack[rqc.current_stack_depth as usize].expect(ERR_NO_VALUE);
     log_range(&format!("range_report_container: rqc current_key_offset: {}, stack_depth {}", rqc.current_key_offset, rqc.current_stack_depth));
-    let top = unsafe { rqc.current_key.add(rqc.current_key_offset as usize) };
-    let sub = unsafe { top.add(1) };
+    
+    let (top, sub) = unsafe {
+        let top = rqc.current_key.add(rqc.current_key_offset as usize);
+        (top, top.add(1))
+    };
     log_range(&format!("range_report_container: top {}, sub {}", unsafe { *top }, unsafe { *sub }));
+    
     let mut segment_chain = SegmentChain::default();
+    
     let element_count: usize = if tree_ctx.hyperion_pointer.superbin_id() == 0 {
         get_all_chained_pointer(&mut segment_chain, rqc.arena, &mut tree_ctx.hyperion_pointer) as usize
     } else {
@@ -1319,91 +1306,55 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
         loop {
             log_range("loop");
             let node_head = unsafe { (container as *mut u8).add(tree_ctx.offset) as *mut NodeHeader };
-
-            #[cfg(feature = "triestats")]
-            {
-                TRIE_STATS.write().num_internal_nodes += 1;
-                if as_top_node(node_head).delta() > 0 {
-                    TRIE_STATS.write().num_delta_encoded += 1;
-                }
-            }
-
-            if as_top_node(node_head).container_type() == NodeState::TopNode {
-                if as_top_node(node_head).delta() != 0 {
+            
+            match as_top_node(node_head).container_type() {
+                NodeState::TopNode => {
+                    let delta = as_top_node(node_head).delta();
                     unsafe {
-                        log_range(&format!("current top: {}", unsafe { *top }));
-                        log_range(&format!("top delta: {}", as_top_node(node_head).delta()));
-                        *top += as_top_node(node_head).delta();
+                        *top = if delta != 0 {
+                            log_range(&format!("current top: {}", unsafe { *top }));
+                            log_range(&format!("top delta: {}", as_top_node(node_head).delta()));
+                            *top + delta
+                        }
+                        else {
+                            (*top).wrapping_add(*(node_head as *mut u8).add(size_of::<NodeHeader>()))
+                        };
                         log_range(&format!("set top to: {}", *top));
                     }
+
                     if !call_top_node(node_head, rqc, cb) {
                         return OK;
                     }
-                    tree_ctx.offset += get_offset_top_node_delta(node_head);
-                    log_range(&format!("update1: {}", tree_ctx.offset));
-                } else {
-                    unsafe {
-                        *top = (*top).wrapping_add(*(node_head as *mut u8).add(size_of::<NodeHeader>()));
-                        // *top += *(node_head as *mut u8).add(size_of::<NodeHeader>());
-                        log_range(&format!("set top to: {}", *top));
+                    
+                    tree_ctx.offset += if delta != 0 {
+                        get_offset_top_node_delta(node_head)
                     }
-                    if !call_top_node(node_head, rqc, cb) {
-                        return OK;
-                    }
-                    tree_ctx.offset += get_offset_top_node_non_delta(node_head);
-                    log_range(&format!("update2: {}", tree_ctx.offset));
-                }
-                unsafe {
-                    *sub = 0;
-                }
-
-                #[cfg(feature = "triestats")]
-                {
-                    let x: i32 = if as_top_node(node_head).delta() != 0 {
-                        as_top_node(node_head).delta() as i32
-                    } else {
-                        unsafe { *(node_head as *mut u8).add(size_of::<NodeHeader>()) as i32 }
+                    else {
+                        get_offset_top_node_non_delta(node_head)
                     };
-                    assert!(x > 0);
-                    assert!(x < 256);
-                    TRIE_STATS.write().delta_enc[x as usize] += 1;
+                    unsafe { *sub = 0; }
                 }
-            } else if as_sub_node(node_head).delta() != 0 {
-                unsafe {
-                    log_range(&format!("current sub: {}", unsafe { *sub }));
-                    log_range(&format!("sub delta: {}", as_sub_node(node_head).delta()));
-                    *sub += as_sub_node(node_head).delta();
-                    log_range(&format!("set sub to: {}", *sub));
-                }
-
-                #[cfg(feature = "triestats")]
-                {
-                    TRIE_STATS.write().delta_enc[as_sub_node(node_head).delta() as usize] += 1;
-                }
-
-                if !handle_report_sub_node(node_head, rqc, cb) {
-                    return OK;
-                }
-                tree_ctx.offset += get_offset_sub_node_delta(node_head);
-                log_range(&format!("update3: {}", tree_ctx.offset));
-            } else {
-                unsafe {
-                    *sub = *(node_head as *mut u8).add(size_of::<NodeHeader>());
-                    log_range(&format!("set sub to: {}", *sub));
-                }
-
-                #[cfg(feature = "triestats")]
-                {
+                _ => {
+                    let delta = as_sub_node(node_head).delta();
                     unsafe {
-                        TRIE_STATS.write().delta_enc[*(node_head as *mut u8).add(size_of::<NodeHeader>()) as usize] += 1;
+                        *sub = if delta != 0 {
+                            log_range(&format!("current sub: {}, sub delta: {}", *sub, delta));
+                            *sub + delta
+                        } else {
+                            log_range(&format!("set sub to: {}", *sub));
+                            *(node_head as *mut u8).add(size_of::<NodeHeader>())
+                        };
                     }
-                }
 
-                if !handle_report_sub_node(node_head, rqc, cb) {
-                    return OK;
+                    if !handle_report_sub_node(node_head, rqc, cb) {
+                        return OK;
+                    }
+                    tree_ctx.offset += if delta != 0 {
+                        get_offset_sub_node_delta(node_head)
+                    } else {
+                        get_offset_sub_node_non_delta(node_head)
+                    };
                 }
-                tree_ctx.offset += get_offset_sub_node_non_delta(node_head);
-                log_range(&format!("update4: {}", tree_ctx.offset));
             }
 
             if tree_ctx.offset >= (data_end as usize) {
@@ -2125,6 +2076,8 @@ use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeade
 use std::io::Write;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+use criterion::black_box;
+use crate::hyperion::api::delete;
 
 const LOG: bool = false;
 static FD: AtomicUsize = AtomicUsize::new(0);

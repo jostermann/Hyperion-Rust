@@ -8,6 +8,7 @@ use crate::memorymanager::api::{get_next_arena, initialize, teardown};
 use once_cell::sync::Lazy;
 use spin::mutex::Mutex;
 use spin::RwLock;
+use crate::hyperion::internals::atomic_pointer::AtomicArena;
 
 pub fn initialize_globals() {
     GLOBAL_CONFIG.write().header.set_initialized(1);
@@ -30,7 +31,7 @@ pub fn bootstrap() -> RootContainerArray {
     assert!(size_of::<RootContainerEntry>() <= 64);
 
     let mut root_container_array = RootContainerArray {
-        root_container_entries: [None; ROOT_NODES],
+        root_container_entries: [const { None }; ROOT_NODES],
     };
 
     for i in 0..ROOT_NODES {
@@ -66,10 +67,10 @@ pub fn get_root_container_entry(root_container_array: &mut RootContainerArray, k
         let mut data = root_container_entry.inner.lock();
 
         if data.arena.is_none() {
-            data.arena = Some(get_next_arena());
+            data.arena = Some(AtomicArena::new_from_pointer(get_next_arena()));
 
             if let Some(ref mut arena) = data.arena {
-                data.hyperion_pointer = Some(initialize_container(*arena));
+                data.hyperion_pointer = Some(initialize_container(arena.get()));
             }
         }
     }
@@ -108,14 +109,17 @@ pub fn delete_no_ppp(root_container_array: &mut RootContainerArray, key: *mut u8
 }
 
 pub fn put(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, input_value: Option<*mut NodeValue>) -> ReturnCode {
+    //log_to_file(&format!("Insert key {}", unsafe { *key  }));
     PUT_REF_CB.read()(root_container_array, key, key_len, input_value)
 }
 
 pub fn get(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, return_value: &mut *mut NodeValue) -> ReturnCode {
+    log_to_file(&format!("Get key {}", unsafe { *key  }));
     GET_REF_CB.read()(root_container_array, key, key_len, return_value)
 }
 
 pub fn delete(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16) -> ReturnCode {
+    log_to_file(&format!("Delete key {}", unsafe { *key  }));
     DELETE_REF_CB.read()(root_container_array, key, key_len)
 }
 

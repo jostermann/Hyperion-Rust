@@ -4,7 +4,7 @@ pub mod memorymanager;
 use crate::hyperion::api::{bootstrap, delete, get, initialize_globals, log_to_file, put, range, shutdown};
 use crate::hyperion::components::container::RootContainerArray;
 use crate::hyperion::components::node::NodeValue;
-use libc::{c_int, c_uchar, c_ushort};
+use libc::{c_int, c_uchar, c_ushort, uname};
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering::SeqCst;
 use crate::hyperion::components::return_codes::ReturnCode;

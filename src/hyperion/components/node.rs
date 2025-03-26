@@ -70,6 +70,7 @@ impl NodeState {
 }
 
 /// A node value is stored by `LeafNodeWithValue`. The leaf node terminates the current path in the trie and the node value stored its referenced value.
+#[repr(C)]
 pub struct NodeValue {
     pub value: u64,
 }

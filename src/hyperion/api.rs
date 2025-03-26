@@ -114,12 +114,12 @@ pub fn put(root_container_array: &mut RootContainerArray, key: *mut u8, key_len:
 }
 
 pub fn get(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16, return_value: &mut *mut NodeValue) -> ReturnCode {
-    log_to_file(&format!("Get key {}", unsafe { *key  }));
+    //log_to_file(&format!("Get key {}", unsafe { *key  }));
     GET_REF_CB.read()(root_container_array, key, key_len, return_value)
 }
 
 pub fn delete(root_container_array: &mut RootContainerArray, key: *mut u8, key_len: u16) -> ReturnCode {
-    log_to_file(&format!("Delete key {}", unsafe { *key  }));
+    //log_to_file(&format!("Delete key {}", unsafe { *key  }));
     DELETE_REF_CB.read()(root_container_array, key, key_len)
 }
 

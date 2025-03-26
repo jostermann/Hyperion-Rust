@@ -105,7 +105,7 @@ impl ContainerTraversalContext {
         self.last_top_char_seen = 0;
         self.last_sub_char_seen = 0;
         self.current_container_offset = 0;
-        self.header.set_in_first_char_scope(true);
+        self.header.set_in_first_char_scope(false);
     }
 
     pub fn as_combined_header(&mut self) -> TraversalType {

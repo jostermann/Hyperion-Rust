@@ -13,7 +13,7 @@ use crate::memorymanager::internals::compression::{CompressionSlidingWindow, SLI
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 
-pub(crate) const NUM_ARENAS: usize = 2;
+pub const NUM_ARENAS: usize = 1;
 pub(crate) const COMPRESSION: usize = 16646144;
 
 lazy_static! {
@@ -33,11 +33,13 @@ pub fn init_arenas() {
     });
 }
 
+#[allow(clippy::modulo_one)]
 pub fn get_next_arena() -> *mut Arena {
     init_arenas();
     &mut (ARENAS.write()[INIT_ITERATOR.fetch_sub(1, Ordering::SeqCst) % NUM_ARENAS]) as *mut Arena
 }
 
+#[allow(clippy::modulo_one)]
 pub fn get_arena_mut(key: u32) -> *mut Arena {
     init_arenas();
     &mut (ARENAS.write()[key as usize % NUM_ARENAS]) as *mut Arena

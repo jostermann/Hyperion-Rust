@@ -1,3 +1,4 @@
+use std::fs::File;
 use hyperion_rust::hyperion::api::{bootstrap, clear_test, get, get_root_container_entry, log_to_file, put, range};
 use hyperion_rust::hyperion::components::container::initialize_container;
 use hyperion_rust::hyperion::components::container::Container;
@@ -7,6 +8,8 @@ use hyperion_rust::hyperion::internals::core::put_debug;
 use hyperion_rust::memorymanager::api::get_pointer;
 use lazy_static::lazy_static;
 use std::intrinsics::copy_nonoverlapping;
+use std::io;
+use std::io::{BufRead, BufReader};
 use std::ptr::{read_unaligned, write_unaligned};
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering::Relaxed;
@@ -28,7 +31,7 @@ fn test_initialize_container_001() {
     assert_eq!(data.hyperion_pointer.as_mut().unwrap().bin_id(), 0);
     assert_eq!(data.hyperion_pointer.as_mut().unwrap().chunk_id(), 0);
 
-    let hyp_ptr = initialize_container(data.arena.unwrap());
+    let hyp_ptr = initialize_container(data.arena.as_mut().unwrap().get());
     assert_eq!(hyp_ptr.superbin_id(), 1);
     assert_eq!(hyp_ptr.metabin_id(), 0);
     assert_eq!(hyp_ptr.bin_id(), 0);
@@ -46,10 +49,10 @@ fn test_container_jumptable_01() {
 
     for i in 0..10 {
         val[0] = i;
-        put_debug(data.arena.unwrap(), data.hyperion_pointer.as_mut().unwrap(), &mut val[0], 2, None);
+        put_debug(data.arena.as_mut().unwrap().get(), data.hyperion_pointer.as_mut().unwrap(), &mut val[0], 2, None);
     }
 
-    let container = get_pointer(data.arena.unwrap(), data.hyperion_pointer.as_mut().unwrap(), 0, val[0]) as *mut Container;
+    let container = get_pointer(data.arena.as_mut().unwrap().get(), data.hyperion_pointer.as_mut().unwrap(), 0, val[0]) as *mut Container;
     assert_eq!(unsafe { (*container).jump_table() }, 0);
     clear_test();
 }
@@ -404,6 +407,29 @@ fn test_container_split_08() {
         assert_eq!(unsafe { (*p_ret).value }, unsafe { *dest as u64 });
     }
     clear_test();
+}
+
+#[test]
+fn ycsb() -> Result<(), io::Error> {
+    let _lock = TEST_MUTEX.lock().unwrap();
+    let mut root_container_array = bootstrap();
+
+    let file = File::open("kv_input.txt")?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line?;
+        if let Some((key, value_str)) = line.split_once(',') {
+            let value: u64 = value_str.parse().unwrap();
+            let mut key_bytes = key.as_bytes();
+            let mut val = NodeValue { value };
+            unsafe {
+                put(&mut root_container_array, key_bytes.as_ptr() as *mut u8, key_bytes.len() as u16, Some(&mut val));
+            }
+        }
+    }
+    clear_test();
+    Ok(())
 }
 
 #[test]

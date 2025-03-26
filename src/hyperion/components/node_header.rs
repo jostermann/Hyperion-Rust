@@ -23,13 +23,14 @@ use crate::hyperion::components::sub_node::ChildLinkType::{Link, PathCompressed}
 use crate::hyperion::components::sub_node::{ChildLinkType, SubNode};
 use crate::hyperion::components::top_node::TopNode;
 use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
-use crate::hyperion::internals::core::{initialize_ejected_container, log_to_file, GlobalConfiguration, HyperionCallback, GLOBAL_CONFIG};
+use crate::hyperion::internals::core::{dump_memory, initialize_ejected_container, log_to_file, HyperionCallback, GLOBAL_CONFIG};
 use crate::hyperion::internals::errors::{
     ERR_EMPTY_EMB_STACK, ERR_EMPTY_EMB_STACK_POS, ERR_NO_ARENA, ERR_NO_CAST_MUT_REF, ERR_NO_CAST_REF, ERR_NO_INPUT_VALUE, ERR_NO_KEY,
     ERR_NO_NEXT_CONTAINER, ERR_NO_NODE_VALUE, ERR_NO_POINTER, ERR_NO_RETURN_VALUE, ERR_NO_SUCCESSOR,
 };
 use crate::memorymanager::api::{get_pointer, reallocate, HyperionPointer};
 use std::cmp::Ordering;
+use std::fmt::format;
 use std::ptr::{copy, copy_nonoverlapping, null_mut, read_unaligned, write_bytes, write_unaligned};
 
 pub const MAX_KEY_LENGTH_PATH_COMPRESSION: i32 = 128;
@@ -182,8 +183,16 @@ pub fn get_child_link_size(node_head: *mut NodeHeader) -> usize {
     match as_sub_node(node_head).child_container() {
         ChildLinkType::None => 0,
         Link => size_of::<ContainerLink>(),
-        ChildLinkType::EmbeddedContainer => unsafe { (*(as_raw_embedded(node_head, get_offset_child_container(node_head)))).size() as usize },
-        PathCompressed => unsafe { (*(as_raw_compressed(node_head))).size() },
+        ChildLinkType::EmbeddedContainer => {
+            log_to_file(&format!("Child link: Embedded container"));
+            unsafe {
+                (*((node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut EmbeddedContainer)).size() as usize
+            }
+        },
+        PathCompressed => {
+            log_to_file(&format!("Child link: Path compressed"));
+            unsafe { (*(as_raw_compressed(node_head))).size() } 
+        },
     }
 }
 
@@ -258,12 +267,16 @@ pub fn get_offset_sub_node_non_delta(node_head: *mut NodeHeader) -> usize {
 #[inline]
 pub fn get_offset_node_value(node_head: *mut NodeHeader) -> usize {
     let top_node: &TopNode = as_top_node(node_head);
-    let base_size: usize = size_of::<NodeHeader>();
-
-    if top_node.is_top_node() {
-        return base_size + get_offset_top_node(node_head);
+    let mut base_size: usize = size_of::<NodeHeader>();
+    
+    if top_node.delta() == 0 {
+        base_size += 1;
     }
-    base_size + (!top_node.has_delta()) as usize
+    
+    if top_node.container_type() == NodeState::TopNode {
+        return base_size + get_jump_overhead(node_head);
+    }
+    base_size
 }
 
 /// Returns the offset of the node's jump successor from the node's base address.
@@ -297,8 +310,11 @@ pub fn get_offset_jump_table(node_head: *mut NodeHeader) -> usize {
 
 /// Copies the path compressed node's value into the return value field of the [`OperationContext`].
 fn get_node_value_pc(node_head: *mut NodeHeader, ocx: &mut OperationContext) -> ReturnCode {
+    //log_to_file("get_node_value_pc");
     let pc_head: &PathCompressedNodeHeader = as_path_compressed(node_head);
     if pc_head.value_present() {
+        log_to_file("get_node_value_pc; copy pc value into return_value");
+        //log_to_file("pc_head value present; copy value to return_value");
         unsafe {
             copy_nonoverlapping(
                 pc_head.as_raw_char().add(size_of::<PathCompressedNodeHeader>()),
@@ -355,7 +371,8 @@ pub fn set_node_value(node_head: *mut NodeHeader, ocx: &mut OperationContext) {
         }
 
         unsafe {
-            // Copy the input value into the nodes memory region
+            log_to_file("set_node_value; copy input_value into container");
+            log_to_file(&format!("copy input value of {}", unsafe { (*(ocx.input_value.unwrap())).value }));
             copy_nonoverlapping(input_value as *mut u8, (node_head as *mut u8).add(get_offset_node_value(node_head)), size_of::<NodeValue>());
         }
         top_node.set_type_flag(LeafNodeWithValue);
@@ -414,13 +431,23 @@ pub fn compare_path_compressed_node(node_head: *mut NodeHeader, ocx: &mut Operat
 
     let overhead = size_of::<PathCompressedNodeHeader>() + pc_header.value_present() as usize * size_of::<NodeValue>();
     let key_len = pc_header.size() - overhead;
-
-    ocx.key_len_left - 2 != (key_len as i32)
-        || unsafe {
-            let op_key = std::slice::from_raw_parts(ocx.key.expect(ERR_NO_KEY).add(2), key_len);
-            let key = std::slice::from_raw_parts((pc_header as *const PathCompressedNodeHeader).add(overhead) as *const u8, key_len);
-            op_key == key
+    
+    if ocx.key_len_left - 2 != (key_len as i32) {
+        log_to_file("path_compressed_node not equal");
+        return false;
+    }
+    
+    unsafe {
+        let op_key = std::slice::from_raw_parts(ocx.key.expect(ERR_NO_KEY).add(2), key_len);
+        let key = std::slice::from_raw_parts((pc_header as *const PathCompressedNodeHeader).add(overhead) as *const u8, key_len);
+        if op_key == key {
+            log_to_file("path_compressed_node equal");
         }
+        else {
+            log_to_file("path_compressed_node not equal");
+        }
+        op_key == key
+    }
 }
 
 /// Scans the node header's jump table for the second char stored in [`ContainerTraversalContext`].
@@ -435,6 +462,7 @@ pub fn get_destination_from_top_node_jump_table(node_head: *mut NodeHeader, ctx:
     log_to_file("use_sub_node_jump_table");
     // The jump table entry for some key k_i can be found by calculating (k_i >> TOP_NODE_JUMP_TABLE_SHIFT) - 1
     let jump_class = ctx.second_char >> TOP_NODE_JUMP_TABLE_SHIFT;
+    log_to_file(&format!("use_sub_node_jump_table, jumpclass: {}", jump_class));
 
     ctx.current_container_offset += get_offset(node_head)
         + if jump_class > 0 {
@@ -444,6 +472,7 @@ pub fn get_destination_from_top_node_jump_table(node_head: *mut NodeHeader, ctx:
         } else {
             0
         };
+    log_to_file(&format!("use_sub_node_jump_table, set current container offset to: {}", ctx.current_container_offset));
 
     jump_class << TOP_NODE_JUMP_TABLE_SHIFT
 }
@@ -472,13 +501,13 @@ pub fn create_path_compressed_context(node_head: *mut NodeHeader, ocx: &mut Oper
 
         if (*pc_node_header).value_present() {
             // Copy the path compressed node's value into the path compressed context
-            copy_nonoverlapping((pc_node_header as *const u8).add(offset), &mut pc_ctx.node_value as *mut _ as *mut u8, value_size);
+            copy_nonoverlapping((pc_node_header as *const u8).add(offset), &mut pc_ctx.node_value as *mut NodeValue as *mut u8, value_size);
         }
 
         // Store this path compressed node's header in the path compressed context
         copy_nonoverlapping(
             pc_node_header as *const u8,
-            &mut pc_ctx.path_compressed_node_header as *mut _ as *mut u8,
+            &mut pc_ctx.path_compressed_node_header as *mut PathCompressedNodeHeader as *mut u8,
             size_of::<PathCompressedNodeHeader>(),
         );
     }
@@ -528,13 +557,14 @@ pub fn update_path_compressed_node(node_head: *mut NodeHeader, ocx: &mut Operati
             wrap_shift_container(ocx.get_root_container_pointer(), value, size_of::<NodeValue>());
         }
         update_space(size_of::<NodeValue>() as i16, ocx, ctx);
-        pc_node = as_path_compressed_mut(node_head);
+        pc_node = as_raw_compressed_mut(node_head);
         value = unsafe { (pc_node as *mut u8).add(size_of::<PathCompressedNodeHeader>()) };
     }
 
     unsafe {
+        log_to_file(&format!("copy input value of {}", unsafe { (*(ocx.input_value.unwrap())).value }));
         // Copy the path compressed node's value into the input value field of OperationContext
-        copy_nonoverlapping(value, input_value as *mut u8, size_of::<NodeValue>());
+        copy_nonoverlapping(input_value as *mut u8, value, size_of::<NodeValue>());
         (*pc_node).set_value_present(true);
     }
 
@@ -550,7 +580,7 @@ pub fn update_path_compressed_node(node_head: *mut NodeHeader, ocx: &mut Operati
 /// - The amount of free bytes in the root container.
 /// - The starting address of the embedded container.
 /// - The first address that is behind the embedded container.
-fn get_embedded_container_info(ocx: &mut OperationContext) -> (usize, u32, u32, u8, *mut u8, *mut u8) {
+fn get_embedded_container_info(ocx: &mut OperationContext, node_head: *mut NodeHeader) -> (usize, u32, u32, u8, *mut u8, *mut u8, usize) {
     let emb_container: &mut AtomicEmbContainer =
         ocx.embedded_traversal_context.embedded_stack.as_mut().expect(ERR_EMPTY_EMB_STACK)[0].as_mut().expect(ERR_EMPTY_EMB_STACK_POS);
 
@@ -563,7 +593,7 @@ fn get_embedded_container_info(ocx: &mut OperationContext) -> (usize, u32, u32, 
 
     (offset, size, root_container.size(), root_container.free_bytes(), unsafe { emb_memory.add(size_of::<EmbeddedContainer>()) }, unsafe {
         emb_memory.add(size as usize)
-    })
+    }, get_offset_child_container(node_head))
 }
 
 /// Initializes a new container and copies the contents from the source embedded container into the newly created container.
@@ -587,6 +617,9 @@ fn create_new_container(ocx: &mut OperationContext, ctx: &mut ContainerTraversal
         copy_nonoverlapping(source, target, size as usize - size_of::<EmbeddedContainer>());
         (*new_container).set_free_size_left((*new_container).free_bytes() as u32 - (size - size_of::<EmbeddedContainer>() as u32));
     }
+    log_to_file(&"create new ejected container".to_string());
+    log_to_file(&format!("new ejected container pointer: {:?}", container_ptr));
+    log_to_file(&format!("new ejected container: {:?}", unsafe { *new_container }));
 
     container_ptr
 }
@@ -594,13 +627,13 @@ fn create_new_container(ocx: &mut OperationContext, ctx: &mut ContainerTraversal
 /// Adds the new [`HyperionPointer`] created by [`create_new_container`] to the root container.
 /// # Safety
 /// - `node_head` must be a valid, aligned pointer for reading and writing.
-fn link_to_new_container(node_head: *mut NodeHeader, container_ptr: HyperionPointer) {
+fn link_to_new_container(node_head: *mut NodeHeader, container_ptr: HyperionPointer, child_offset: usize) {
     // Warning: node_head is in the root container, not in the newly created ejected container
     as_sub_node_mut(node_head).set_child_container(Link);
     unsafe {
         // Add the newly created HyperionPointer to the root container
         // This entry in the root container can then be used to jump into the ejected container
-        let link_ptr: *mut ContainerLink = (node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut ContainerLink;
+        let link_ptr: *mut ContainerLink = (node_head as *mut u8).add(child_offset) as *mut ContainerLink;
         (*link_ptr).ptr = container_ptr;
     }
 }
@@ -702,11 +735,12 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
     assert!(ocx.embedded_traversal_context.embedded_container_depth > 0);
     node_head = meta_expand(ocx, ctx, get_container_link_size() as u32);
 
-    let (embedded_offset, embedded_size, root_size, free_bytes, source, shift_src) = get_embedded_container_info(ocx);
-    log_to_file(&format!("offset: {}, size: {}, root_size: {}, free_bytes: {}", embedded_offset, embedded_size, root_size, free_bytes));
+    let (embedded_offset, embedded_size, root_size, free_bytes, source, shift_src, child_offset) 
+        = get_embedded_container_info(ocx, node_head);
+    log_to_file(&format!("offset: {}, size: {}, root_size: {}, free_bytes: {}, child offset: {}", embedded_offset, embedded_size, root_size, free_bytes, child_offset));
     let container_ptr: HyperionPointer = create_new_container(ocx, ctx, source, embedded_size);
 
-    link_to_new_container(node_head, container_ptr);
+    link_to_new_container(node_head, container_ptr, child_offset);
     shift_memory_after_ejection(node_head, ocx, embedded_offset, embedded_size, shift_src, root_size, free_bytes);
     let (delta, new_free_size_left) = reset_root_container(ocx, ctx, embedded_size, root_size);
     resize_root_container(ocx, delta, root_size, free_bytes, new_free_size_left);
@@ -717,32 +751,36 @@ pub fn eject_container(mut node_head: *mut NodeHeader, ocx: &mut OperationContex
 /// This function is intended for use on [`SubNode`]. Calling this function on a [`TopNode`] will result in undefined behavior.
 /// - `node_head` must be a valid, aligned pointer for reading and writing.
 pub fn add_embedded_container(mut node: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
-    log_to_file("add_embedded_container");
+    log_to_file(&format!("add_embedded_container; for key: {}", get_sub_node_key(node as *mut Node, ctx, false)));
     ocx.header.set_next_container_valid(EmbeddedContainerValid);
     let offset_child_container: usize = get_offset_child_container(node);
 
     // Reserve space for the embedded container, if the root container is too small to fit the embedded container
     node = new_expand_embedded(ocx, ctx, size_of::<EmbeddedContainer>() as u32);
 
-    let next_embedded_ptr = unsafe {
-        let base_ptr = node as *mut u8;
-        let next_embedded = base_ptr.add(offset_child_container) as *mut EmbeddedContainer;
-        // Shift the root container's memory to store the embedded container inline with its corresponding sub node
-        wrap_shift_container(ocx.get_root_container_pointer(), next_embedded as *mut u8, size_of::<EmbeddedContainer>());
-        next_embedded
+    ocx.embedded_traversal_context.next_embedded_container = unsafe {
+        Some((node as *mut u8).add(offset_child_container) as *mut EmbeddedContainer)
     };
 
+    if let Some(next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container {
+        unsafe {
+            wrap_shift_container(ocx.get_root_container_pointer(), next_embedded_container as *mut u8, size_of::<EmbeddedContainer>());
+        }
+    }
+
     ctx.current_container_offset += offset_child_container;
+    log_to_file(&format!("add_embedded_container set current container offset to: {}", ctx.current_container_offset));
     as_sub_node_mut(node).set_child_container(ChildLinkType::EmbeddedContainer);
     safe_top_node_jump_context(ocx, ctx);
 
     // Register the embedded container in the operation context
     ocx.embedded_traversal_context.embedded_stack.as_mut().expect(ERR_EMPTY_EMB_STACK)[ocx.embedded_traversal_context.embedded_container_depth] =
-        Some(AtomicEmbContainer::new_from_pointer(next_embedded_ptr));
+        Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.next_embedded_container.unwrap()));
     ocx.embedded_traversal_context.embedded_container_depth += 1;
+    log_to_file(&format!("add_embedded_container increased embedded depth to: {}", ocx.embedded_traversal_context.embedded_container_depth));
     ocx.next_container_pointer = None;
-    ocx.embedded_traversal_context.next_embedded_container = Some(next_embedded_ptr);
     update_space(size_of::<EmbeddedContainer>() as i16, ocx, ctx);
+
 }
 
 pub enum EmbedLinkCommands {
@@ -762,24 +800,25 @@ fn get_operation(node_head: *mut NodeHeader, ocx: &mut OperationContext, size_pc
     let embedded_depth = ocx.embedded_traversal_context.embedded_container_depth;
 
     if sub_node.child_container() == PathCompressed {
+        log_to_file("CC1: TransformPath");
         return TransformPathCompressedNode;
     }
-
-    if root_size + size_pc < container_limit {
+    else if root_size + size_pc < container_limit {
         // The current root container size + the size required for path compression do not exceed the root container's size limit
 
         if embedded_depth == 0 {
             return if size_pc < MAX_KEY_LENGTH_PATH_COMPRESSION {
                 // The node can be stored as path compressed node
+                log_to_file("CC2: CreatePath");
                 CreatePathCompressedNode
             } else {
                 // Path compressed size is too large
                 // At this point it is more efficient to create a new embedded container
+                log_to_file("CC3: CreateEmbed");
                 CreateEmbeddedContainer
             };
         }
-
-        if embedded_depth < CONTAINER_MAX_EMBEDDED_DEPTH {
+        else if embedded_depth < CONTAINER_MAX_EMBEDDED_DEPTH {
             // There is already some embedded container stored in the root container
             let embedded_stack = ocx.embedded_traversal_context.embedded_stack.as_mut().expect(ERR_EMPTY_EMB_STACK);
             let embedded_size = embedded_stack[0].as_mut().expect(ERR_EMPTY_EMB_STACK_POS).borrow_mut().size() as i32;
@@ -788,21 +827,23 @@ fn get_operation(node_head: *mut NodeHeader, ocx: &mut OperationContext, size_pc
                 && size_pc < MAX_KEY_LENGTH_PATH_COMPRESSION
             {
                 // The node can be stored as path compressed node
+                log_to_file("CC4: CreatePath");
                 return CreatePathCompressedNode;
-            }
-
-            if embedded_size < container_limit {
+            } 
+            else if embedded_size < (GLOBAL_CONFIG.read().header.container_embedding_high_watermark() as i32) {
                 // Path compressed size is too large
                 // At this point it is more efficient to create a new embedded container
+                log_to_file("CC5: CreateEmbed");
                 return CreateEmbeddedContainer;
             }
         }
+        return CreateLinkToContainer;
     }
-
-    if sub_node.child_container() == ChildLinkType::None
+    else if sub_node.child_container() == ChildLinkType::None
         && size_pc < 16
         && root_size < (2 * GLOBAL_CONFIG.read().header.container_embedding_high_watermark() as i32)
     {
+        log_to_file("CC6: CreatePath");
         return CreatePathCompressedNode;
     }
 
@@ -830,8 +871,8 @@ pub fn create_child_container(mut node_head: *mut NodeHeader, ocx: &mut Operatio
             node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
         },
         CreatePathCompressedNode => {
-            log_to_file("CreatePathCompressedNode");
             let offset: usize = get_offset_child_container(node_head);
+            log_to_file(&format!("CreatePathCompressedNode; offset: {}", offset));
 
             if (ocx.get_root_container().free_bytes() as i32) < required_size_for_path_compression {
                 // Root container is too small to fit the path compressed node
@@ -844,12 +885,14 @@ pub fn create_child_container(mut node_head: *mut NodeHeader, ocx: &mut Operatio
                 // Shift the root container's memory to fit the path compressed node
                 wrap_shift_container(ocx.get_root_container_pointer(), target as *mut u8, required_size_for_path_compression as usize);
                 (*target).set_size(required_size_for_path_compression as usize);
+                log_to_file(&format!("set path compressed size to: {}", unsafe { (*target).size() }));
 
                 let mut target_partial_key: *mut u8 = (target as *mut u8).add(size_of::<PathCompressedNodeHeader>());
 
                 if let Some(ref mut input_value) = ocx.input_value {
                     (*target).set_value_present(true);
                     // Copy the input value into the path compressed node
+                    log_to_file(&format!("copy input value of {}", (*(*(input_value))).value));
                     copy_nonoverlapping(*input_value as *mut u8, target_partial_key, size_of::<NodeValue>());
                     target_partial_key = target_partial_key.add(size_of::<NodeValue>());
                 } else {
@@ -912,6 +955,9 @@ fn process_embedded_container(
 
     // Store a pointer to the embedded container of the sub node
     ocx.embedded_traversal_context.next_embedded_container = Some(unsafe { (node_head as *mut u8).add(offset) as *mut EmbeddedContainer });
+    log_to_file(&format!("set next embedded container; key: {}, size: {}", get_sub_node_key(node_head as *mut Node, ctx, false), unsafe {
+        (*(ocx.embedded_traversal_context.next_embedded_container.unwrap())).size()
+    }));
     assert!(
         unsafe { (*(ocx.embedded_traversal_context.next_embedded_container.expect(ERR_NO_NEXT_CONTAINER))).size() as u32 }
             < ocx.get_root_container().size()
@@ -924,12 +970,11 @@ fn process_embedded_container(
     ocx.embedded_traversal_context.embedded_stack.as_mut().expect(ERR_EMPTY_EMB_STACK)[ocx.embedded_traversal_context.embedded_container_depth] =
         Some(AtomicEmbContainer::new_from_pointer(ocx.embedded_traversal_context.next_embedded_container.expect(ERR_NO_POINTER)));
     ocx.embedded_traversal_context.embedded_container_depth += 1;
-
-    let config: spin::RwLockReadGuard<'_, GlobalConfiguration> = GLOBAL_CONFIG.read();
+    
     let embedded_size = unsafe { (*(ocx.embedded_traversal_context.next_embedded_container.expect(ERR_NO_POINTER))).size() as u32 };
     let root_size = ocx.get_root_container().size();
-    let embedding_hwm = config.header.container_embedding_high_watermark();
-    let embedding_limit = config.container_embedding_limit;
+    let embedding_hwm = GLOBAL_CONFIG.read().header.container_embedding_high_watermark();
+    let embedding_limit = GLOBAL_CONFIG.read().container_embedding_limit;
 
     if modify
         && ocx.header.command() == Put
@@ -946,6 +991,7 @@ fn process_embedded_container(
     } else {
         // The embedded and root containers are within their size limits
         ctx.current_container_offset += offset;
+        log_to_file(&format!("process_embedded_container set current container offset to: {}", ctx.current_container_offset));
         ocx.header.set_next_container_valid(EmbeddedContainerValid);
         ocx.next_container_pointer = Some(ocx.embedded_traversal_context.next_embedded_container.expect(ERR_NO_POINTER) as *mut HyperionPointer);
         (OK, node_head)
@@ -1023,8 +1069,8 @@ pub fn create_node(
     let input_memory_consumption: usize = ocx.input_value.map_or(0, |_| options.add_value as usize * size_of::<NodeValue>());
     let required: usize = size_of::<NodeHeader>() + options.set_key as usize + input_memory_consumption;
     log_to_file(&format!(
-        "create_node: embedded: {}, absolute_key: {}, input_mem: {}, required: {}",
-        options.embedded as u8, absolute_key, input_memory_consumption, required
+        "create_node: embedded: {}, absolute_key: {}, input_mem: {}, required: {}, set key: {}, add value: {}, container depth: {}, key delta: {}",
+        options.embedded as u8, absolute_key, input_memory_consumption, required, options.set_key as u8, options.add_value as u8, options.container_depth as u8, options.key_delta
     ));
 
     if !options.embedded && options.container_depth == NodeState::TopNode {
@@ -1059,6 +1105,7 @@ pub fn create_node(
     }
 
     if !options.embedded {
+        log_to_file(&format!("check force shift, currently {}", ctx.header.force_shift_before_insert() as usize));
         if ctx.header.force_shift_before_insert() {
             log_to_file("wrap shift container");
             unsafe {
@@ -1390,6 +1437,7 @@ pub fn handle_link_transformation(
             + ocx.get_pc_ejection_context().path_compressed_node_header.size() as i32
             + free_size_left as i32);
 
+    log_to_file(&format!("free: {}, diff: {}, absolute: {}, tail: {}", free_size_left, diff, absolute_offset, container_tail));
     unsafe {
         let tail_target: *mut u8 = (link as *mut u8).add(get_container_link_size());
         copy(tail_target.add(pc_delta as usize), tail_target, container_tail as usize);
@@ -1414,12 +1462,14 @@ pub fn handle_link_transformation(
 
     let top: *mut NodeHeader = data_offset as *mut NodeHeader;
     as_top_node_mut(top).set_type_flag(InnerNode);
+    log_to_file(&format!("copy partial key of: {}", ocx.get_pc_ejection_context().partial_key[0]));
     unsafe {
         copy_nonoverlapping(ocx.get_pc_ejection_context().partial_key.as_mut_ptr(), (top as *mut u8).add(size_of::<NodeHeader>()), 1);
     }
     ctx.current_container_offset += 2;
 
     if pc_key_len == 1 {
+        log_to_file("Trafo1-1");
         // Insert leaf node
         if ocx.get_pc_ejection_context().path_compressed_node_header.value_present() {
             as_top_node_mut(top).set_type_flag(LeafNodeWithValue);
@@ -1427,7 +1477,7 @@ pub fn handle_link_transformation(
             unsafe {
                 copy_nonoverlapping(
                     &mut ocx.get_pc_ejection_context().node_value as *mut NodeValue as *mut u8,
-                    (top as *mut u8).add(size_of::<NodeHeader>()),
+                    (top as *mut u8).add(size_of::<NodeHeader>() + 1),
                     size_of::<NodeValue>(),
                 );
             }
@@ -1436,6 +1486,7 @@ pub fn handle_link_transformation(
             consumed_newcon = 2;
         }
     } else if pc_key_len == 2 {
+        log_to_file("Trafo1-2");
         let sub: *mut NodeHeader = unsafe { data_offset.add(size_of::<NodeHeader>() + 1) as *mut NodeHeader };
         as_sub_node_mut(sub).set_container_type(NodeState::SubNode);
         unsafe {
@@ -1447,7 +1498,7 @@ pub fn handle_link_transformation(
             consumed_newcon = 4 + size_of::<NodeValue>();
             unsafe {
                 copy_nonoverlapping(
-                    ocx.get_pc_ejection_context().partial_key.as_mut_ptr(),
+                    &mut ocx.get_pc_ejection_context().node_value as *mut NodeValue as *mut u8,
                     (sub as *mut u8).add(size_of::<NodeHeader>() + 1),
                     size_of::<NodeValue>(),
                 );
@@ -1457,6 +1508,7 @@ pub fn handle_link_transformation(
             consumed_newcon = 4;
         }
     } else {
+        log_to_file("Trafo1-3");
         let mut sub: *mut NodeHeader = unsafe { data_offset.add(size_of::<NodeHeader>() + 1) as *mut NodeHeader };
         as_sub_node_mut(sub).set_container_type(NodeState::SubNode);
         as_sub_node_mut(sub).set_type_flag(InnerNode);
@@ -1484,7 +1536,7 @@ pub fn handle_link_transformation(
                 );
                 copy_nonoverlapping(
                     ocx.get_pc_ejection_context().partial_key.as_mut_ptr().add(2),
-                    (pc_node as *mut u8).add(size_of::<PathCompressedNodeHeader>()),
+                    (pc_node as *mut u8).add(size_of::<PathCompressedNodeHeader>() + size_of::<NodeValue>()),
                     remaining_pc_key_len,
                 );
             } else {
@@ -1507,6 +1559,7 @@ pub fn handle_link_transformation(
 
 pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
     log_to_file("transform_pc_node");
+    dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
     assert_eq!(as_sub_node(node_head).child_container(), PathCompressed);
     assert!(ocx.get_pc_ejection_context().pec_valid);
 
@@ -1520,6 +1573,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
     let pc_key_len: usize = ocx.get_pc_ejection_context().path_compressed_node_header.size() - pc_key_offset;
     let container_embedding_limit: u32 = GLOBAL_CONFIG.read().container_embedding_limit;
     let container_embedding_hwm: u32 = GLOBAL_CONFIG.read().header.container_embedding_high_watermark();
+    log_to_file(&format!("offset: {}, key offset: {}, key len: {}", child_container_offset, pc_key_offset, pc_key_len));
 
     if (ocx.get_root_container().size() >= container_embedding_limit)
         || (ocx.embedded_traversal_context.embedded_container_depth >= CONTAINER_MAX_EMBEDDED_DEPTH)
@@ -1531,13 +1585,16 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 .size() as u32)
                 >= (container_embedding_hwm - get_container_link_size() as u32)))
     {
+        log_to_file("Trafo1");
         handle_link_transformation(node_head, ocx, ctx, child_container_offset, pc_key_len);
     } else {
+        log_to_file("Trafo2");
         if ocx.embedded_traversal_context.embedded_container_depth == 0 {
             safe_top_node_jump_context(ocx, ctx);
         }
 
         if pc_key_len == 1 {
+            log_to_file("Trafo2-1");
             let required: usize = size_of::<NodeHeader>() + size_of::<EmbeddedContainer>() - size_of::<PathCompressedNodeHeader>();
             node_head = meta_expand(ocx, ctx, required as u32);
             let child_container: *mut u8 = unsafe { (node_head as *mut u8).add(child_container_offset) };
@@ -1551,15 +1608,21 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                     Some((node_head as *mut u8).add(child_container_offset) as *mut EmbeddedContainer);
                 let value_present: usize = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
 
-                if let Some(ref mut next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container {
-                    (*(*next_embedded_container))
+                if let Some(next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container {
+                    (*next_embedded_container)
                         .set_size((size_of::<EmbeddedContainer>() + size_of::<NodeHeader>() + 1 + value_present * size_of::<NodeValue>()) as u8);
                 } else {
                     panic!("{}", ERR_NO_NEXT_CONTAINER)
                 }
-                /*unsafe { (*(ocx.embedded_traversal_context.next_embedded_container.unwrap())).set_size(
-                    (size_of::<EmbeddedContainer>() + size_of::<NodeHeader>() + 1 + value_present * size_of::<NodeValue>()) as u8
-                )};*/
+                
+                let t = get_sub_node_key(node_head as *mut Node, ctx, false);
+                
+                log_to_file(
+                    &format!("new embedded container at key {}; new size calculated: {}, new size set: {}", 
+                             t, (size_of::<EmbeddedContainer>() + size_of::<NodeHeader>() + 1 + value_present * size_of::<NodeValue>()),
+                    unsafe { (*(ocx.embedded_traversal_context.next_embedded_container.unwrap())).size() }
+                ));
+
                 let embedded_top: *mut NodeHeader =
                     (node_head as *mut u8).add(child_container_offset + size_of::<EmbeddedContainer>()) as *mut NodeHeader;
                 write_bytes(embedded_top as *mut u8, 0, size_of::<NodeHeader>());
@@ -1581,6 +1644,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 );
             }
         } else if pc_key_len == 2 {
+            log_to_file("Trafo2-2");
             let required: usize = size_of::<NodeHeader>() * 2 + size_of::<EmbeddedContainer>() - size_of::<PathCompressedNodeHeader>();
             node_head = meta_expand(ocx, ctx, required as u32);
 
@@ -1596,16 +1660,21 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                     Some((node_head as *mut u8).add(child_container_offset) as *mut EmbeddedContainer);
                 let value_present = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
 
-                if let Some(ref mut next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container {
-                    (*(*(next_embedded_container))).set_size(
+                if let Some(next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container {
+                    (*next_embedded_container).set_size(
                         (size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>()) as u8,
                     );
                 } else {
                     panic!("{}", ERR_NO_NEXT_CONTAINER)
                 }
-                /*unsafe { (*(ocx.embedded_traversal_context.next_embedded_container.unwrap())).set_size(
-                    (size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>()) as u8
-                )};*/
+
+                let t = get_sub_node_key(node_head as *mut Node, ctx, false);
+
+                log_to_file(
+                    &format!("new embedded container at key {}; new size calculated: {}, new size set: {}",
+                             t, (size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>()),
+                             unsafe { (*(ocx.embedded_traversal_context.next_embedded_container.unwrap())).size() }
+                    ));
 
                 let embedded_top: *mut NodeHeader =
                     (node_head as *mut u8).add(child_container_offset + size_of::<EmbeddedContainer>()) as *mut NodeHeader;
@@ -1638,6 +1707,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 );
             }
         } else {
+            log_to_file("Trafo2-3");
             let required: usize = size_of::<NodeHeader>() * 2 + size_of::<EmbeddedContainer>();
             node_head = meta_expand(ocx, ctx, required as u32);
 
@@ -1652,9 +1722,9 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 ocx.embedded_traversal_context.next_embedded_container =
                     Some((node_head as *mut u8).add(child_container_offset) as *mut EmbeddedContainer);
                 let value_present: usize = ocx.get_pc_ejection_context().path_compressed_node_header.value_present() as usize;
-
-                if let Some(ref mut next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container {
-                    (*(*(next_embedded_container))).set_size(
+                
+                if let Some(next_embedded_container) = ocx.embedded_traversal_context.next_embedded_container {
+                    (*next_embedded_container).set_size(
                         (size_of::<EmbeddedContainer>()
                             + (size_of::<NodeHeader>() + 1) * 2
                             + value_present * size_of::<NodeValue>()
@@ -1664,6 +1734,18 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 } else {
                     panic!("{}", ERR_NO_NEXT_CONTAINER)
                 }
+
+                let t = get_sub_node_key(node_head as *mut Node, ctx, false);
+
+                log_to_file(
+                    &format!("new embedded container at key {}; new size calculated: {}, new size set: {}",
+                             t, size_of::<EmbeddedContainer>()
+                                 + (size_of::<NodeHeader>() + 1) * 2
+                                 + value_present * size_of::<NodeValue>()
+                                 + 1
+                                 + remaining_partial_key,
+                             unsafe { (*(ocx.embedded_traversal_context.next_embedded_container.unwrap())).size() }
+                    ));
 
                 let embedded_top: *mut NodeHeader =
                     (node_head as *mut u8).add(child_container_offset + size_of::<EmbeddedContainer>()) as *mut NodeHeader;
@@ -1723,6 +1805,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
             panic!("{}", ERR_NO_POINTER)
         }
         ocx.embedded_traversal_context.embedded_container_depth += 1;
+        log_to_file(&format!("transform_pc_node set embedded depth to: {}", ocx.embedded_traversal_context.embedded_container_depth));
         ocx.next_container_pointer = None;
 
         as_sub_node_mut(node_head).set_child_container(ChildLinkType::EmbeddedContainer);
@@ -1731,6 +1814,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
         ctx.current_container_offset += child_container_offset;
         safe_top_node_jump_context(ocx, ctx);
     }
+    dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
 }
 
 /// Inserts a reference key in front of this node header.
@@ -1744,6 +1828,7 @@ pub fn insert_top_jump_table_reference_key(node_head: *mut NodeHeader, ocx: &mut
     log_to_file("inject_sublevel_reference_key");
     let diff = ref_key - ctx.last_sub_char_seen;
     let relative = (diff <= DELTA_MAX_VALUE) as usize;
+    log_to_file(&format!("diff: {}, relative: {}", diff, relative));
 
     // Get either the node's key field or the node's header, depending on if the difference can be delta encoded
     let target = unsafe { (node_head as *mut u8).add(size_of::<NodeHeader>() + (1 - relative)) };
@@ -1752,6 +1837,7 @@ pub fn insert_top_jump_table_reference_key(node_head: *mut NodeHeader, ocx: &mut
         let node_offset = (node_head as *mut u8).offset_from(ocx.get_root_container_pointer() as *mut u8) as i32;
         let free_size_left = ocx.get_root_container().free_bytes() as i32;
         let bytes_to_move = ocx.get_root_container().size() as i32 - (node_offset + free_size_left);
+        log_to_file(&format!("offset: {}, free: {}, move: {}", node_offset, free_size_left, bytes_to_move));
 
         // Shift the entire container's memory starting at this node header by at most 1 byte forward in order to store the reference key
         copy(node_head as *mut u8, target, bytes_to_move as usize);

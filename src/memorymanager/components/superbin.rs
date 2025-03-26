@@ -15,6 +15,7 @@ pub(crate) const INCREMENT_SIZE: usize = 32;
 pub(crate) const SUPERBIN_INDEX_SIZE_BIT: u8 = 6;
 /// Maximum amount of superbin entries in the arena.
 pub(crate) const SUPERBIN_ARRAY_MAXSIZE: usize = 1 << SUPERBIN_INDEX_SIZE_BIT;
+pub(crate) const METABIN_POINTER_INCREMENT: u16 = 16;
 
 /// Stores all metadate of a superbin instance.
 #[bitfield(u64)]
@@ -190,11 +191,10 @@ impl Superbin {
         let metabins_initialized = self.header.metabins_initialized();
 
         if self.metabin_ring[0] == metabins_initialized - 1 {
-            if metabins_initialized >= META_MAXMETABINS as u16 {
-                return;
+            if self.header.metabins_initialized() % METABIN_POINTER_INCREMENT == 0 {
+                let _ = self.metabins.check_extend_pointer_array(metabins_initialized as usize);
             }
-
-            let _ = self.metabins.check_extend_pointer_array(metabins_initialized as usize);
+            
             let allocation_successful: bool = self.metabins.new_metabin_at(metabins_initialized as usize);
 
             if allocation_successful {
@@ -211,5 +211,10 @@ impl Superbin {
 
 /// Returns the superbin id for the specified size.
 pub(crate) fn get_superbin_id(size: u32) -> u8 {
-    (size > 0 && size <= (63 * INCREMENT_SIZE) as u32).then(|| (((size - 1) / INCREMENT_SIZE as u32) + 1) as u8).unwrap_or(0)
+    /*(size > 0 && size <= (63 * INCREMENT_SIZE) as u32).then(|| (((size - 1) / INCREMENT_SIZE as u32) + 1) as u8).unwrap_or(0)*/
+    if size <= (63 * INCREMENT_SIZE) as u32 {
+        (((size - 1) / INCREMENT_SIZE as u32) + 1) as u8
+    } else {
+        0
+    }
 }

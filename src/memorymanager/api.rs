@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use crate::memorymanager::components::arena::{get_arena_mut, ArenaInner, NUM_ARENAS};
+use crate::memorymanager::components::arena::{get_arena_mut, ArenaInner};
 pub use crate::memorymanager::components::arena::{get_next_arena, Arena};
 use crate::memorymanager::components::bin::Bin;
 use crate::memorymanager::components::superbin::SUPERBIN_ARRAY_MAXSIZE;
@@ -12,6 +12,7 @@ use crate::memorymanager::internals::simd_common::{apply_simd, clear_simd};
 pub use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 pub use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 pub use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
+pub use crate::memorymanager::components::arena::NUM_ARENAS;
 
 pub const ARENA_COMPRESSION: usize = 16646144;
 

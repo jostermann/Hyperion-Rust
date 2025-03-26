@@ -1,14 +1,11 @@
-use crate::hyperion::components::container::{
-    shift_container, update_space, wrap_shift_container, Container, EmbeddedContainer, RootContainerEntryInner, CONTAINER_MAX_EMBEDDED_DEPTH,
-    DEFAULT_CONTAINER_SIZE,
-};
+use crate::hyperion::components::container::{get_container_head_size, shift_container, update_space, wrap_shift_container, Container, EmbeddedContainer, RootContainerEntryInner, CONTAINER_MAX_EMBEDDED_DEPTH, DEFAULT_CONTAINER_SIZE};
 use crate::hyperion::components::context::TraversalType::{
     EmptyOneCharTopNode, EmptyTwoCharTopNode, EmptyTwoCharTopNodeInFirstCharScope, FilledOneCharTopNode, FilledTwoCharTopNode,
     FilledTwoCharTopNodeInFirstCharScope,
 };
 use crate::hyperion::components::context::{
     ContainerInjectionContext, ContainerTraversalContext, EmbeddedTraversalContext, JumpContext, JumpTableSubContext, OperationCommand,
-    PathCompressedEjectionContext, MAX_CONTAINER_JUMP_TABLES, TOPLEVEL_AGGRESSIVE_GROWTH__HWM, TOP_NODE_JUMP_TABLE_HWM,
+    PathCompressedEjectionContext, DELTA_MAX_VALUE, MAX_CONTAINER_JUMP_TABLES, TOPLEVEL_AGGRESSIVE_GROWTH__HWM, TOP_NODE_JUMP_TABLE_HWM,
 };
 use crate::hyperion::components::jump_table::{ContainerJumpTable, CONTAINER_JUMP_TABLE_ENTRIES, TOPLEVEL_NODE_JUMP_HWM};
 use crate::hyperion::components::node::NodeType::{Invalid, LeafNodeWithValue};
@@ -26,15 +23,16 @@ use crate::hyperion::components::sub_node::ChildLinkType;
 use crate::hyperion::components::sub_node::ChildLinkType::PathCompressed;
 use crate::hyperion::components::top_node::TopNode;
 use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
-use crate::hyperion::internals::core::{log_to_file, GLOBAL_CONFIG};
+use crate::hyperion::internals::core::{dump_memory, log_to_file, GLOBAL_CONFIG};
 use crate::hyperion::internals::errors::{
     ERR_EMPTY_EMB_STACK, ERR_NO_ARENA, ERR_NO_CAST_MUT_REF, ERR_NO_INPUT_VALUE, ERR_NO_KEY, ERR_NO_NEXT_CONTAINER, ERR_NO_NODE, ERR_NO_RETURN_VALUE,
     ERR_NO_SUCCESSOR, ERR_NO_VALUE,
 };
 use crate::memorymanager::api::{get_pointer, reallocate, Arena, HyperionPointer};
 use bitfield_struct::bitfield;
-use criterion::black_box;
 use std::cmp::Ordering;
+use std::fmt::format;
+use std::hint::black_box;
 use std::intrinsics::write_bytes;
 use std::ptr::{null_mut, read_unaligned, write_unaligned};
 
@@ -58,7 +56,7 @@ impl ContainerValidTypes {
     /// Transforms its states from an 8 bit value into a named state.
     ///
     /// # Panics
-    /// - if an invalid container valid type was found.
+    /// Panics if an invalid container valid type was found.
     pub(crate) const fn from_bits(value: u8) -> Self {
         match value {
             0 => ContainerValidTypes::Invalid,
@@ -244,7 +242,7 @@ impl OperationContext {
 /// This function is intended for use on [`Container`]. Executing this function on an [`EmbeddedContainer`] might result in undefined behavior.
 pub fn new_expand(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, required: u32) -> *mut NodeHeader {
     let free_space_left: u32 = ocx.get_root_container().free_bytes() as u32;
-    log_to_file(&format!("nex_expand: {} > {}", required, free_space_left));
+    log_to_file(&format!("new_expand: {} > {}", required, free_space_left));
 
     // Check if the expansion overflows the container's size
     if required > free_space_left {
@@ -446,6 +444,7 @@ pub fn meta_expand(ocx: &mut OperationContext, ctx: &mut ContainerTraversalConte
 
 /// Scans through the embedded container and inserts both first_char and second_char.
 pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> ReturnCode {
+    log_to_file(&format!("scan_put_embedded"));
     ctx.header.set_node_type(1);
 
     loop {
@@ -462,6 +461,7 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
 
         match ctx.as_combined_header() {
             node @ (EmptyOneCharTopNode | EmptyTwoCharTopNode) => {
+                log_to_file(&format!("case 0 | 2"));
                 // Found an empty top node. Insert the key directly at the found position.
                 let key_delta_top = ctx.key_delta_top();
                 node_header = create_node(
@@ -478,16 +478,20 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                 );
 
                 if node == EmptyOneCharTopNode {
+                    log_to_file(&format!("case 0"));
                     return OK;
                 }
+                log_to_file(&format!("case 2"));
                 ctx.header.set_in_first_char_scope(true);
                 ctx.current_container_offset += get_offset_top_node(node_header);
                 log_to_file(&format!("scan_put_embedded set current container offset to {}", ctx.current_container_offset));
             },
             node @ (FilledOneCharTopNode | FilledTwoCharTopNode) => {
+                log_to_file(&format!("case 1 | 3"));
                 // Found a top node already storing one key
                 if as_top_node(node_header).container_type() == NodeState::TopNode {
                     let key = get_top_node_key(node_header as *mut Node, ctx);
+                    log_to_file(&format!("found key: {}", key));
 
                     match key.cmp(&ctx.first_char) {
                         Ordering::Less => {
@@ -498,6 +502,7 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                         Ordering::Equal => {
                             // Store the key directly at this position
                             if node == FilledOneCharTopNode {
+                                log_to_file(&format!("case 1"));
                                 return handle_expand(ocx, ctx, node_header, true);
                             }
                             ctx.header.set_in_first_char_scope(true);
@@ -521,6 +526,7 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                             );
 
                             if node == FilledOneCharTopNode {
+                                log_to_file(&format!("case 1"));
                                 return OK;
                             }
                         },
@@ -538,9 +544,10 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
             node @ (FilledTwoCharTopNodeInFirstCharScope | EmptyTwoCharTopNodeInFirstCharScope) => {
                 if node == EmptyTwoCharTopNodeInFirstCharScope || as_top_node(node_header).container_type() == NodeState::TopNode {
                     if node == FilledTwoCharTopNodeInFirstCharScope {
+                        log_to_file(&format!("case 7 top"));
                         ctx.header.set_force_shift_before_insert(true);
                     }
-
+                    log_to_file(&format!("case 6 | 7 top"));
                     let key_delta_sub = ctx.key_delta_sub();
                     create_node(
                         node_header,
@@ -558,6 +565,7 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                 }
 
                 let key = get_sub_node_key(node_header as *mut Node, ctx, false);
+                log_to_file(&format!("case 7 found key: {}", key));
 
                 match key.cmp(&ctx.second_char) {
                     Ordering::Less => {
@@ -595,116 +603,117 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
 }
 
 pub fn scan_put_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) -> ReturnCode {
-    let mut node_head: *mut NodeHeader = null_mut();
     let mut key = 0;
-    let mut jump_point = NoJump;
+    let mut skip_all = false;
 
     ctx.max_offset = (ocx.get_root_container().size() as i32 - ocx.get_root_container().free_bytes() as i32) as usize;
+    log_to_file(&format!("scan put single set max offset to: {}", ctx.max_offset));
 
-    initialize_data_for_scan(ocx, ctx, node_head, &mut key, &mut jump_point);
+    let mut node_head = initialize_data_for_scan(ocx, ctx, &mut key, &mut skip_all);
+    
+    while ctx.current_container_offset < ocx.get_root_container().size() as usize && as_top_node(node_head).type_flag() != Invalid {
+        if skip_all {
+            node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+        }
+        
+        if !skip_all && as_top_node(node_head).container_type() == NodeState::SubNode {
+            ocx.jump_context.sub_nodes_seen += 1;
+            ctx.current_container_offset += get_offset_sub_node(node_head);
+            log_to_file(&format!("scan put single (sub) set current container offset to: {}", ctx.current_container_offset));
+            continue;
+        }
 
-    loop {
-        match jump_point {
-            NoJump => {
-                node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+        if !skip_all {
+            key = get_top_node_key(node_head as *mut Node, ctx);
+            log_to_file(&format!("scan put single found key: {}", key));
+        }
+        if skip_all {
+            skip_all = false;
+        }
+        black_box(skip_all);
 
-                if ctx.max_offset > ctx.current_container_offset {
-                    jump_point = JumpPoint1;
-                    continue;
-                }
+        ocx.jump_context.top_node_key = key as i32;
 
-                if ctx.current_container_offset >= ocx.get_root_container().size() as usize || as_top_node(node_head).type_flag() == Invalid {
-                    ocx.jump_context.top_node_key = ctx.first_char as i32;
-                    let key_delta_top = ctx.key_delta_top();
-                    create_node(
-                        node_head,
-                        ocx,
-                        ctx,
-                        NodeCreationOptions {
-                            container_depth: NodeState::TopNode,
-                            set_key: key_delta_top == 0,
-                            add_value: true,
-                            key_delta: key_delta_top,
-                            embedded: false,
-                        },
-                    );
-                    return OK;
-                }
-                jump_point = JumpPoint1;
-                continue;
+        match key.cmp(&ctx.first_char) {
+            Ordering::Less => {
+                log_to_file(&format!("SPS-1"));
+                ctx.header.set_last_top_char_set(true);
+                ctx.last_top_char_seen = key;
             },
-            JumpPoint1 => {
-                jump_point = NoJump;
-                if as_top_node(node_head).container_type() == NodeState::TopNode {
-                    key = get_top_node_key(node_head as *mut Node, ctx);
-                    jump_point = JumpPoint2;
-                    continue;
-                }
-                ocx.jump_context.sub_nodes_seen += 1;
-                ctx.current_container_offset += get_offset_sub_node(node_head);
+            Ordering::Equal => {
+                log_to_file(&format!("SPS-2"));
+                register_jump_context(node_head, ctx, ocx);
+                return handle_expand(ocx, ctx, node_head, false);
             },
-            JumpPoint2 => {
-                ocx.jump_context.top_node_key = key as i32;
-
-                match key.cmp(&ctx.first_char) {
-                    Ordering::Less => {
-                        ctx.header.set_last_top_char_set(true);
-                        ctx.last_top_char_seen = key;
+            Ordering::Greater => {
+                log_to_file(&format!("SPS-3"));
+                ocx.jump_context.predecessor = None;
+                ctx.header.set_force_shift_before_insert(true);
+                let key_delta_top = ctx.key_delta_top();
+                create_node(
+                    node_head,
+                    ocx,
+                    ctx,
+                    NodeCreationOptions {
+                        container_depth: NodeState::TopNode,
+                        set_key: key_delta_top == 0,
+                        add_value: true,
+                        key_delta: key_delta_top,
+                        embedded: false,
                     },
-                    Ordering::Equal => {
-                        register_jump_context(node_head, ctx, ocx);
-                        return handle_expand(ocx, ctx, node_head, false);
-                    },
-                    Ordering::Greater => {
-                        ocx.jump_context.predecessor = None;
-                        ctx.header.set_force_shift_before_insert(true);
-                        let key_delta_top = ctx.key_delta_top();
-                        create_node(
-                            node_head,
-                            ocx,
-                            ctx,
-                            NodeCreationOptions {
-                                container_depth: NodeState::TopNode,
-                                set_key: key_delta_top == 0,
-                                add_value: true,
-                                key_delta: key_delta_top,
-                                embedded: false,
-                            },
-                        );
-                        return OK;
-                    },
-                }
-
-                if as_top_node(node_head).jump_successor_present() {
-                    ctx.current_container_offset = get_jump_successor_value(node_head);
-                } else {
-                    ctx.current_container_offset += get_offset_top_node(node_head);
-                }
-                ocx.jump_context.predecessor = Some(node_head);
-                ocx.jump_context.top_node_predecessor_offset_absolute =
-                    unsafe { (node_head as *mut u8).offset_from(ocx.get_root_container_pointer() as *mut u8) as i32 };
-                ocx.jump_context.sub_nodes_seen = 0;
-                jump_point = NoJump;
-                continue;
+                );
+                return OK;
             },
         }
+
+        ctx.current_container_offset += if as_top_node(node_head).jump_successor_present() {
+            get_jump_successor_value(node_head)
+        } else {
+            get_offset_top_node(node_head)
+        };
+        log_to_file(&format!("scan put single set current container offset to: {}", ctx.current_container_offset));
+        ocx.jump_context.predecessor = Some(node_head);
+        ocx.jump_context.top_node_predecessor_offset_absolute =
+            unsafe { (node_head as *mut u8).offset_from(ocx.get_root_container_pointer() as *mut u8) as i32 };
+        log_to_file(&format!("scan put single set top offset to: {}", ocx.jump_context.top_node_predecessor_offset_absolute));
+        ocx.jump_context.sub_nodes_seen = 0;
     }
+
+    log_to_file(&format!("SPS dropped out of loop condition"));
+    ocx.jump_context.top_node_key = ctx.first_char as i32;
+    let key_delta_top = ctx.key_delta_top();
+    create_node(
+        node_head,
+        ocx,
+        ctx,
+        NodeCreationOptions {
+            container_depth: NodeState::TopNode,
+            set_key: key_delta_top == 0,
+            add_value: true,
+            key_delta: key_delta_top,
+            embedded: false,
+        },
+    );
+    OK
 }
 
-#[allow(unused_variables)]
+#[allow(unused_assignments)]
 pub fn initialize_data_for_scan(
-    ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, mut node_head: *mut NodeHeader, key: &mut u8, jump_point: &mut JumpStates,
-) {
+    ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, key: &mut u8, skip_check: &mut bool,
+) -> *mut NodeHeader {
     if ocx.get_root_container().jump_table() == 0 {
-        ctx.current_container_offset = ocx.get_root_container().get_container_head_size();
+        ctx.current_container_offset = get_container_head_size();
+        log_to_file(&format!("set current container offset to: {}", ctx.current_container_offset));
     } else {
         *key = ocx.get_root_container().get_key_and_offset_with_jump_table(ctx.first_char, &mut ctx.current_container_offset);
-        node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
-
+        log_to_file(&format!("got offset: {}, key: {}, from jump table", ctx.current_container_offset, key));
+        
         if *key != 0 {
-            *jump_point = JumpPoint2;
+            *skip_check = true;
         }
     }
+
+    unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader }
 }
 
 /// Expands the current container by one [`NodeValue`] and stores the current input value as the node's stored value.
@@ -747,6 +756,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
 
     while (ctx.current_container_offset < ocx.get_root_container().size() as usize) && (as_top_node(node_head).type_flag() != Invalid) {
         if as_top_node(node_head).container_type() == NodeState::TopNode {
+            log_to_file(&format!("scan_put_phase2 top"));
             ctx.header.set_force_shift_before_insert(true);
             let key_delta_sub = ctx.key_delta_sub();
             create_node(
@@ -774,6 +784,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
                 // Since the search key is smaller than the found key, and the keys are stored in ascending order, the key cannot
                 // be inserted here.
                 ctx.current_container_offset += get_offset_sub_node(node_head);
+                log_to_file(&format!("scan_put_phase2 lt set current container offset: {}", ctx.current_container_offset));
                 node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
                 ctx.header.set_last_sub_char_set(true);
                 ctx.last_sub_char_seen = key;
@@ -784,6 +795,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
                     if ocx.jump_context.sub_nodes_seen >= TOP_NODE_JUMP_TABLE_HWM as i32 {
                         // The distance between the top node and the to be inserted sub node is too large. Create a jump table and restart
                         // the scan.
+                        log_to_file(&format!("scan_put_phase2 jump back to scan_put"));
                         create_top_node_jump_table(ocx.top_jump_table_context.top_node.expect(ERR_NO_NODE), ocx, ctx);
                         ctx.flush();
                         ocx.flush_jump_context();
@@ -828,6 +840,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
             },
         }
     }
+    log_to_file(&format!("scan_put_phase2 dropped out of loop condition"));
 
     ctx.header.set_node_type(0);
     let key_delta_sub = ctx.key_delta_sub();
@@ -893,6 +906,8 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
         // Get the top node's key for the jump table entry that belongs to ctx.first_char
         ocx.jump_context.top_node_key =
             ocx.get_root_container().get_key_and_offset_with_jump_table(ctx.first_char, &mut ctx.current_container_offset) as i32;
+        log_to_file(&format!("scan_put set top key to: {}", ocx.jump_context.top_node_key));
+        log_to_file(&format!("scan_put jump-set current container offset to: {}", ctx.current_container_offset));
 
         if ocx.jump_context.top_node_key != 0 {
             node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
@@ -921,6 +936,7 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
 
         if !skip_all {
             if toplevel_nodes == 0 && ocx.get_root_container().size() > DEFAULT_CONTAINER_SIZE * 4 {
+                log_to_file(&format!("scan_put recursive re-scan"));
                 create_container_jump_table(ocx, ctx);
                 ctx.flush();
                 ocx.flush_jump_context();
@@ -930,6 +946,7 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
 
             // No jump table present, get the key of the found top node
             ocx.jump_context.top_node_key = get_top_node_key(node_head as *mut Node, ctx) as i32;
+            log_to_file(&format!("scan_put set top key to: {}", ocx.jump_context.top_node_key));
         }
 
         if skip_all {
@@ -952,6 +969,7 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
                 ocx.jump_context.sub_nodes_seen = 0;
 
                 let jump_successor_present = as_top_node(node_head).jump_successor_present();
+                log_to_file(&format!("scan_put jump successor present: {}", jump_successor_present as usize));
 
                 ctx.current_container_offset += if jump_successor_present {
                     get_jump_successor_value(node_head)
@@ -960,10 +978,11 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
                 };
 
                 // Get the next top node and rescan in the next trie branch
-                log_to_file(&format!("scan_put set current container offset to {}", ctx.current_container_offset));
                 ocx.jump_context.predecessor = Some(node_head);
                 ocx.jump_context.top_node_predecessor_offset_absolute =
                     unsafe { (node_head as *mut u8).offset_from(ocx.get_root_container_pointer() as *mut u8) as i32 };
+                log_to_file(&format!("scan_put set top offset to: {}", ocx.jump_context.top_node_predecessor_offset_absolute));
+                log_to_file(&format!("scan_put set current container offset to {}", ctx.current_container_offset));
                 node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
                 skip_first = jump_successor_present;
             },
@@ -976,6 +995,7 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
                 ocx.top_jump_table_context.top_node = Some(node_head);
                 ocx.jump_context.top_node_predecessor_offset_absolute =
                     unsafe { (node_head as *mut u8).offset_from(ocx.get_root_container_pointer() as *mut u8) as i32 };
+                log_to_file(&format!("scan_put set top offset to: {}", ocx.jump_context.top_node_predecessor_offset_absolute));
                 ocx.jump_context.sub_nodes_seen = 0;
                 ocx.jump_context.predecessor = Some(node_head);
 
@@ -1023,6 +1043,8 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
             },
         }
     }
+
+    log_to_file(&format!("scan_put dropped out of loop condition"));
 
     // Scanned through all stored nodes and reached the end of the stored data. The reached memory region of this container is
     // currently all-zeroed and unused.

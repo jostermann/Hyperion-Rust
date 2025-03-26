@@ -2,6 +2,8 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::hyperion::components::container::EmbeddedContainer;
+use crate::memorymanager::api::Arena;
+
 pub struct AtomicPointer<T> {
     ptr: AtomicPtr<T>,
 }
@@ -46,3 +48,4 @@ impl<T> AtomicPointer<T> {
 }
 
 pub type AtomicEmbContainer = AtomicPointer<EmbeddedContainer>;
+pub type AtomicArena = AtomicPointer<Arena>;

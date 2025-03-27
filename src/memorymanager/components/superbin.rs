@@ -1,3 +1,4 @@
+use std::ptr::null_mut;
 use bitfield_struct::bitfield;
 
 use crate::memorymanager::components::bin::Bin;
@@ -123,7 +124,7 @@ impl Superbin {
 
         if !self.has_cached_bin() && bin.header.allocated_by() == AllocatedBy::Mmap {
             self.bin_cache.clone_from(&bin.chunks);
-            bin.chunks = AtomicMemoryPointer::new();
+            bin.chunks.store(null_mut());
         } else {
             bin.teardown(self.get_data_size() as usize);
         }

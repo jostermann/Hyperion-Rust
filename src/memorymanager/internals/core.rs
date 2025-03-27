@@ -10,8 +10,9 @@ use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPo
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 use spin::RwLock;
 use std::ffi::c_void;
-use std::ptr::{copy, copy_nonoverlapping, null_mut, write_bytes};
+use std::ptr::{copy, copy_nonoverlapping, null_mut, read, write_bytes, write_volatile};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::hyperion::api::log_to_file;
 
 /// Base increment size on extended hyperion pointers larger than 8 KiB.
 pub const INCREMENT_SIZE_EXT: usize = 4096;
@@ -59,10 +60,15 @@ pub fn get_chunk_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hyperion
             },
         };
     }
-
+    log_to_file(&format!("Get chunk pointer from: {:?}", hyperion_pointer));
     let current_superbin: &mut Superbin = arena.get_superbin_ref(hyperion_pointer);
+    log_to_file(&format!("Metadata: size of bin {} * chunk id {} = {}", current_superbin.header.size_of_bin(), hyperion_pointer.chunk_id(),
+                         hyperion_pointer.chunk_id() as usize * current_superbin.header.size_of_bin() as usize
+    ));
     let offset: usize = hyperion_pointer.chunk_id() as usize * current_superbin.header.size_of_bin() as usize;
-    arena.get_bin_ref(hyperion_pointer).chunks.add_get(offset)
+    let chunk_addr = arena.get_bin_ref(hyperion_pointer).chunks.add_get(offset);
+    //log_to_file(&format!("Chunk address: {:p}", chunk_addr as *mut u8));
+    chunk_addr
 }
 
 /// Returns a raw pointer to the chunk specified by the [`HyperionPointer`].
@@ -71,6 +77,7 @@ pub fn get_chunk_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hyperion
 /// - `needed_character` is used to retrieve the corresponding extended chunk from superbin 0
 #[allow(unreachable_code, dead_code, unused_variables)]
 pub fn get_chunk(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer, might_increment: i32, needed_character: u8) -> *mut c_void {
+    log_to_file(&format!("S6B1: is empty? {}", arena.superbins[6].get_metabin_candidate().unwrap().bins[1].chunks.is_null() as usize));
     if hyperion_pointer.is_extended_pointer() {
         return get_chunk_pointer_from_extended(arena, hyperion_pointer, needed_character);
     }
@@ -87,6 +94,8 @@ pub fn get_chunk(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer,
     let current_bin_from_pointer: &mut Bin = arena.get_bin_ref(hyperion_pointer);
     current_bin_from_pointer.header.set_chance2nd_read(0);
     PROBE_COMPRESSION.read()(arena);
+    log_to_file(&format!("Get new pointer for: {:?}", hyperion_pointer));
+    log_to_file(&format!("Pointer is null: {}", data.is_null() as usize));
     data
 }
 
@@ -156,6 +165,7 @@ pub fn get_chained_pointer(extended_hyperion_pointer: &mut ExtendedHyperionPoint
 /// During allocation, this function automatically checks if the allocation must be done via mmap or on the heap. Depending on the size, the resulting
 /// hyperion pointer either points to some mmap-ed chunk or to some chained memory on the heap.
 pub fn get_new_pointer(arena: &mut ArenaInner, size: usize, chained_counter: i32) -> HyperionPointer {
+    log_to_file(&format!("S6B1: is empty? {}", arena.superbins[6].get_metabin_candidate().unwrap().bins[1].chunks.is_null() as usize));
     let superbin_id: u8 = get_superbin_id(size as u32);
     let mut new_hyperion_pointer: HyperionPointer = HyperionPointer::default();
     new_hyperion_pointer.set_superbin_id(superbin_id);
@@ -164,6 +174,8 @@ pub fn get_new_pointer(arena: &mut ArenaInner, size: usize, chained_counter: i32
     allocate_bin(arena, &mut new_hyperion_pointer, superbin, chained_counter);
 
     let metabin: &mut Metabin = arena.get_metabin_ref(&mut new_hyperion_pointer);
+    log_to_file(&format!("New pointer reallocation: {:?}", new_hyperion_pointer));
+    
 
     if new_hyperion_pointer.is_extended_pointer() {
         let extended_pointer: &mut ExtendedHyperionPointer =
@@ -240,6 +252,8 @@ pub fn roundup(size: usize) -> usize {
 
 /// Reallocates the memory region pointed to by `hyperion_pointer` with the given size.
 pub fn reallocate_from_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer, size: usize, needed_character: u8) -> HyperionPointer {
+    log_to_file(&format!("Reallocate from container pointer: {:?}", hyperion_pointer));
+    log_to_file(&format!("S6B1: is empty? {}", arena.superbins[6].get_metabin_candidate().unwrap().bins[1].chunks.is_null() as usize));
     if hyperion_pointer.is_extended_pointer() {
         reallocate_extended_pointer(arena, hyperion_pointer, size, needed_character)
     } else {
@@ -257,7 +271,10 @@ fn reallocate_hyperion_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
     let old_data: *mut c_void = get_chunk(arena, hyperion_pointer, 1, 0);
     let new_data: *mut c_void = get_chunk(arena, &mut new_pointer, 1, 0);
     let allocation_size: u16 = arena.get_superbin_ref(hyperion_pointer).get_data_size();
+    
     unsafe {
+        log_to_file(&format!("R1"));
+        log_to_file(&format!("old_data: {}, new_data: {}, allocation_size: {}, copy size: {}", old_data.is_null() as usize, old_data.is_null() as usize, allocation_size, allocation_size.min(size as u16) as usize));
         // Copy all old data into the newly allocated chunk
         copy_nonoverlapping(old_data as *const u8, new_data as *mut u8, allocation_size.min(size as u16) as usize);
     }

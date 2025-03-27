@@ -264,13 +264,16 @@ pub fn new_expand(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContex
         assert_eq!(ocx.embedded_traversal_context.embedded_container_depth, 0);
 
         unsafe {
-            *ocx.embedded_traversal_context.root_container_pointer = reallocate(
+            let mut old_pointer = *ocx.embedded_traversal_context.root_container_pointer;
+            let new_pointer = reallocate(
                 ocx.arena.expect(ERR_NO_ARENA),
-                ocx.embedded_traversal_context.root_container_pointer,
+                &mut old_pointer,
                 new_size as usize,
                 ocx.chained_pointer_hook,
             );
+            *ocx.embedded_traversal_context.root_container_pointer = new_pointer;
         }
+        log_to_file(&format!("Root container pointer: {:?}", unsafe { *ocx.embedded_traversal_context.root_container_pointer }));
 
         ocx.embedded_traversal_context.root_container =
             get_pointer(ocx.arena.expect(ERR_NO_ARENA), ocx.embedded_traversal_context.root_container_pointer, 1, ocx.chained_pointer_hook)
@@ -278,6 +281,7 @@ pub fn new_expand(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContex
 
         ocx.get_root_container().set_free_size_left((new_size - old_size) + free_space_left);
 
+        log_to_file(&format!("Root container: {:?}", unsafe { *ocx.embedded_traversal_context.root_container }));
         let root_container_ptr = ocx.get_root_container_pointer();
 
         // Restore the predecessor node.

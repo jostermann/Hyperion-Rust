@@ -1,9 +1,11 @@
-use crate::memorymanager::components::bin::{Bin, BINOFFSET_BITS, FREELIST_ELEMENT_BITS};
+use crate::memorymanager::components::bin::{Bin, BINOFFSET_BITS, BIN_ELEMENTS, FREELIST_ELEMENT_BITS};
 use crate::memorymanager::components::superbin::{Superbin, SUPERBIN_INDEX_SIZE_BIT};
 use crate::memorymanager::internals::compression::CompressionState;
 use crate::memorymanager::internals::simd_common::{apply_simd, get_index_first_set_bit_256_2};
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 use std::array::from_fn;
+use crate::hyperion::api::log_to_file;
+use crate::memorymanager::internals::allocator::auto_free_memory;
 
 pub(crate) const METABIN_BITS: u8 = 32 - (BINOFFSET_BITS + SUPERBIN_INDEX_SIZE_BIT);
 /// Amount of bins stored in a single metabin instance.
@@ -95,7 +97,11 @@ impl Metabin {
 
         hyperion_pointer.set_bin_id(candidate);
         let bin: &mut Bin = &mut self.bins[hyperion_pointer.bin_id() as usize];
-
+        
+        log_to_file(&format!("Allocate bin from: {:?}", hyperion_pointer));
+        log_to_file(&format!("Bin {} initialization status: is empty? {}", candidate, bin.is_empty() as usize));
+        //log_to_file(&format!("Bin {} pointer address: {:p}", candidate, bin.chunks.get() as *mut u8));
+        
         if bin.is_empty() {
             bin.initialize(superbin)
         }

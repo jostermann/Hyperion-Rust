@@ -9,6 +9,7 @@
 
 use std::backtrace::Backtrace;
 use std::ffi::{c_int, c_void};
+use std::intrinsics::write_bytes;
 use std::panic::Location;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +18,7 @@ use libc::{
     calloc, free, malloc, memcpy, memset, mmap, munmap, sysconf, MAP_ANON, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE,
     _SC_PAGESIZE,
 };
-
+use crate::hyperion::api::log_to_file;
 use crate::memorymanager::api::teardown;
 use crate::memorymanager::internals::allocator::AllocatedBy::{Heap, Mmap};
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
@@ -114,16 +115,26 @@ pub(crate) unsafe fn auto_allocate_memory(ptr: &mut AtomicMemoryPointer, size: u
 /// This function operates directly on the virtual memory. Rust cannot check if
 /// the allocation parameters are valid.
 pub(crate) unsafe fn allocate_mmap(size: usize) -> *mut c_void {
-    let p_new: *mut c_void = mmap(null_mut(), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    let p_new: *mut c_void = mmap(null_mut(), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if p_new == MAP_FAILED {
+        log_to_file(&format!("ERROR: ALLOCATION ON MMAP FAILED"));
+        abort(&mut AllocatorError {
+            message: "Allocation of memory failed",
+            location: Location::caller(),
+            backtrace: Backtrace::capture(),
+        });
         null_mut()
     } else {
+        write_bytes(p_new, 0, size);
         p_new
     }
 }
 
 pub(crate) unsafe fn allocate_heap(size: usize) -> *mut c_void {
     let p_new: *mut c_void = calloc(size, 1);
+    if p_new.is_null() {
+        log_to_file(&format!("ERROR: ALLOCATION ON HEAP FAILED"));
+    }
     p_new
 }
 

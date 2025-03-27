@@ -10,10 +10,11 @@ bitfield-struct = "0.10.1"
 zstd-sys = "2.0.13"
 spin = "0.9.8"
 once_cell = "1.20.3"
-rand = { version = "0.9.0", features = ["small_rng"]}
+rand = { version = "0.9.0"}
 lazy_static = "1.5.0"
 criterion = "0.5.1"
-log = "0.4.26"
+signal-hook = "0.3.17"
+backtrace = "0.3.74"
 
 [features]
 compression = []
@@ -23,6 +24,7 @@ triestats = []
 
 [profile.dev]
 debug = true
+opt-level = 2
 
 [profile.release]
 debug = true
@@ -30,6 +32,7 @@ panic = "abort"
 
 [profile.test]
 debug = true
+opt-level = 2
 
 #[lib]
 #name = "hyperion"

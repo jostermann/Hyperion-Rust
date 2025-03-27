@@ -1559,7 +1559,7 @@ pub fn handle_link_transformation(
 
 pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
     log_to_file("transform_pc_node");
-    dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
+    //dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
     assert_eq!(as_sub_node(node_head).child_container(), PathCompressed);
     assert!(ocx.get_pc_ejection_context().pec_valid);
 
@@ -1814,7 +1814,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
         ctx.current_container_offset += child_container_offset;
         safe_top_node_jump_context(ocx, ctx);
     }
-    dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
+    //dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
 }
 
 /// Inserts a reference key in front of this node header.

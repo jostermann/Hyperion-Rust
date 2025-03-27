@@ -1,5 +1,6 @@
+use std::ptr::null_mut;
 use bitfield_struct::bitfield;
-
+use crate::hyperion::api::log_to_file;
 use crate::memorymanager::components::superbin::Superbin;
 use crate::memorymanager::internals::allocator::{allocate_mmap, auto_allocate_memory, auto_free_memory, AllocatedBy};
 use crate::memorymanager::internals::allocator::AllocatedBy::Mmap;
@@ -154,6 +155,7 @@ impl Bin {
         self.set_flags(CompressionState::NONE, Mmap as u8, 0, 0);
         self.chunks = AtomicMemoryPointer::new();
         self.chunk_usage_mask.fill(u32::MAX);
+        log_to_file(&format!("Bin is not initialized"));
 
         if superbin.has_cached_bin() {
             self.chunks.clone_from(&superbin.bin_cache);
@@ -216,6 +218,7 @@ impl Bin {
             unsafe {
                 assert!(auto_free_memory(self.chunks.get(), bin_size, self.header.allocated_by()));
             }
+            self.chunks.store(null_mut());
         } else {
             unsafe {
                 let mut iterator: *mut ExtendedHyperionPointer = self.chunks.get() as *mut ExtendedHyperionPointer;
@@ -227,6 +230,7 @@ impl Bin {
                     iterator = iterator.add(1);
                 }
                 assert!(auto_free_memory(self.chunks.get(), size * BIN_ELEMENTS, self.header.allocated_by()));
+                self.chunks.store(null_mut());
             }
         }
     }

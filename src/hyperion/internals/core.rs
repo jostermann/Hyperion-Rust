@@ -39,6 +39,7 @@ use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::ptr::{copy, copy_nonoverlapping, null_mut, read_unaligned, write_bytes, write_unaligned};
 use std::{fs, io};
+use std::cell::RefCell;
 
 pub const CONTAINER_SPLIT_THRESHOLD_A: usize = 12288;
 pub const CONTAINER_SPLIT_THRESHOLD_B: usize = 65536;
@@ -833,10 +834,10 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
             log_to_file(&format!("Root container pointer: {:?}", unsafe { *ocx.embedded_traversal_context.root_container_pointer }));
             log_to_file(&format!("Root container: {:?}", unsafe { *ocx.embedded_traversal_context.root_container }));
 
-            /*if ctx.first_char == 57 && ctx.second_char == 54 && ocx.key_len_left == 16 && ocx.get_root_container().size() == 9696
-                && unsafe { (*(ocx.embedded_traversal_context.root_container_pointer)).chunk_id() } == 3623 {
+            if ctx.first_char == 50 && ctx.second_char == 55 && ocx.key_len_left == 17 && ocx.get_root_container().size() == 672
+                && ocx.get_root_container().free_bytes() == 1 && unsafe { (*(ocx.embedded_traversal_context.root_container_pointer)).chunk_id() } == 2196 {
                 TARGET_DUMP_FOUND.store(true, Relaxed);
-            }*/
+            }
 
             dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
 
@@ -2143,18 +2144,22 @@ use std::io::{BufWriter, Write};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
-const LOG: bool = true;
+const LOG: bool = false;
 static FD: AtomicUsize = AtomicUsize::new(0);
 static DUMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static CURRENT_LINES: AtomicU64 = AtomicU64::new(0);
 static DELETE_OLD_LOGS: AtomicBool = AtomicBool::new(true);
-const LOG_MIN: usize = 15000;
-const LOG_MAX: usize = 20000;
+const LOG_MIN: usize = 10000;
+const LOG_MAX: usize = 14000;
 static TARGET_DUMP_FOUND: AtomicBool = AtomicBool::new(false);
 const DUMP_MEMORY: bool = false;
 
+thread_local! {
+    static LOG_FILE: RefCell<Option<BufWriter<File>>> = RefCell::new(None);
+}
+
 pub fn delete_log_files() -> io::Result<()> {
-    for entry in fs::read_dir(".")? {
+    for entry in fs::read_dir("./logs/")? {
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
@@ -2182,6 +2187,7 @@ pub fn log_to_file(message: &str) {
         FD.fetch_add(1, Relaxed);
         DUMP_COUNTER.store(0, Relaxed);
         CURRENT_LINES.store(0, Relaxed);
+        LOG_FILE.with(|f| f.borrow_mut().take());
     }
 
     if FD.load(Relaxed) < LOG_MIN {
@@ -2193,29 +2199,48 @@ pub fn log_to_file(message: &str) {
         return;
     }
 
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(format!("debug{}.log", FD.load(Relaxed))) {
-        let _ = writeln!(file, "{}", message);
-        let _ = file.flush();
-        CURRENT_LINES.store(CURRENT_LINES.load(Relaxed) + 1, Relaxed);
-    } else {
-        eprintln!("Fehler beim Öffnen der Log-Datei");
-    }
+    LOG_FILE.with(|cell| {
+        let mut opt = cell.borrow_mut();
+
+        if opt.is_none() {
+            let path = format!("./logs/debug{}.log", FD.load(Relaxed));
+            match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(file) => *opt = Some(BufWriter::new(file)),
+                Err(e) => {
+                    eprintln!("Fehler beim Öffnen der Log-Datei {}", e);
+                    return;
+                }
+            }
+        }
+
+        if let Some(writer) = opt.as_mut() {
+            if writeln!(writer, "{}", message).is_ok() {
+                let _ = writer.flush();
+                CURRENT_LINES.store(CURRENT_LINES.load(Relaxed) + 1, Relaxed);
+            }
+        }
+    });
 }
 
 pub fn dump_memory(ptr: *const u8, size: usize, ocx: &mut OperationContext) -> std::io::Result<()> {
-    /*if !TARGET_DUMP_FOUND.load(Relaxed) {
-        return Ok(());
-    }*/
     if !DUMP_MEMORY {
         return Ok(());
     }
 
-    if ocx.get_root_container().size() != 9696 {
+    if !TARGET_DUMP_FOUND.load(Relaxed) {
         return Ok(());
     }
 
-    let mut file = File::create(&format!("dump{}_{}.log", FD.load(Relaxed), DUMP_COUNTER.load(Relaxed)))?;
-    let _ = writeln!(file, "Root container pointer: {:?}", unsafe { *ocx.embedded_traversal_context.root_container_pointer });
+    if FD.load(Relaxed) < LOG_MIN {
+        return Ok(());
+    }
+
+    if FD.load(Relaxed) > LOG_MAX {
+        return Ok(());
+    }
+
+    let mut file = File::create(&format!("./logs/dump{}_{}.log", FD.load(Relaxed), DUMP_COUNTER.load(Relaxed)))?;
+    let _ = writeln!(file, "Root container pointer: {:?}", ocx.embedded_traversal_context.root_container_pointer);
     let _ = writeln!(file, "Root container: {:?}\n", unsafe { *ocx.embedded_traversal_context.root_container });
     let mut writer = BufWriter::new(file);
 

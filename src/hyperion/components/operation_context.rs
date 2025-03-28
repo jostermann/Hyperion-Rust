@@ -1,7 +1,4 @@
-use crate::hyperion::components::container::{
-    get_container_head_size, shift_container, update_space, wrap_shift_container, Container, EmbeddedContainer, RootContainerEntryInner,
-    CONTAINER_MAX_EMBEDDED_DEPTH, DEFAULT_CONTAINER_SIZE,
-};
+use crate::hyperion::components::container::{get_container_head_size, shift_container, update_space, wrap_shift_container, Container, EmbeddedContainer, RootContainerEntry, RootContainerEntryInner, CONTAINER_MAX_EMBEDDED_DEPTH, DEFAULT_CONTAINER_SIZE};
 use crate::hyperion::components::context::TraversalType::{
     EmptyOneCharTopNode, EmptyTwoCharTopNode, EmptyTwoCharTopNodeInFirstCharScope, FilledOneCharTopNode, FilledTwoCharTopNode,
     FilledTwoCharTopNodeInFirstCharScope,
@@ -35,6 +32,8 @@ use std::cmp::Ordering;
 use std::hint::black_box;
 use std::intrinsics::write_bytes;
 use std::ptr::{null, null_mut, read_unaligned, write_unaligned, NonNull};
+use std::sync::Arc;
+use spin::Mutex;
 
 /// Stores, if the next container stored by next_container_pointer is valid.
 #[derive(Debug, PartialEq)]
@@ -103,7 +102,7 @@ pub struct OperationContext {
     pub key_len_left: i32,
     pub key: *const u8,
     pub jump_context: JumpContext,
-    pub root_container_entry: *mut RootContainerEntryInner,
+    pub root_container_entry: Arc<Mutex<RootContainerEntry>>,
     pub embedded_traversal_context: EmbeddedTraversalContext,
     pub top_jump_table_context: JumpTableSubContext,
     pub next_container_pointer: Option<*mut HyperionPointer>,
@@ -122,7 +121,7 @@ impl Default for OperationContext {
             key_len_left: 0,
             key: null(),
             jump_context: JumpContext::default(),
-            root_container_entry: null_mut(),
+            root_container_entry: Arc::new(Mutex::new(RootContainerEntry::default())),
             embedded_traversal_context: EmbeddedTraversalContext::default(),
             top_jump_table_context: JumpTableSubContext::default(),
             next_container_pointer: None,

@@ -1,4 +1,4 @@
-use crate::hyperion::components::container::DEFAULT_CONTAINER_SIZE;
+use crate::hyperion::components::container::{RootContainerEntry, DEFAULT_CONTAINER_SIZE};
 use crate::hyperion::components::container::{
     get_container_head_size, shift_container, Container, ContainerLink, EmbeddedContainer, RootContainerEntryInner, CONTAINER_MAX_EMBEDDED_DEPTH,
 };
@@ -1315,7 +1315,7 @@ struct TrieStats {
 
 use crate::hyperion::internals::errors::{ERR_EMPTY_EMB_STACK_POS, ERR_NO_NODE, ERR_NO_POINTER, ERR_NO_SUCCESSOR, ERR_NO_VALUE};
 use once_cell::sync::Lazy;
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 static TRIE_STATS: Lazy<RwLock<TrieStats>> = Lazy::new(|| {
     RwLock::new(TrieStats {
@@ -2053,15 +2053,15 @@ pub fn handle_report_sub_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryCo
 }
 
 pub fn initialize_operation_context(
-    ocx: &mut OperationContext, operation_command: OperationCommand, root_container_entry: &mut RootContainerEntryInner, key: *const u8, key_len: u16,
+    ocx: &mut OperationContext, operation_command: OperationCommand, root_container_entry: Arc<Mutex<RootContainerEntry>>, key: *const u8, key_len: u16,
 ) {
     ocx.header.set_command(operation_command);
     ocx.header.set_next_container_valid(ContainerValid);
-    ocx.root_container_entry = root_container_entry as *mut RootContainerEntryInner;
-    ocx.arena = root_container_entry.arena.as_mut().unwrap().get();
-    if let Some(ref mut hyperion_pointer) = root_container_entry.hyperion_pointer {
+    ocx.arena = root_container_entry.lock().arena.as_mut().unwrap().get();
+    if let Some(ref mut hyperion_pointer) = root_container_entry.lock().hyperion_pointer {
         ocx.next_container_pointer = Some(hyperion_pointer as *mut HyperionPointer);
     }
+    ocx.root_container_entry = root_container_entry;
     ocx.key = key;
     ocx.key_len_left = key_len as i32;
 }
@@ -2082,12 +2082,12 @@ pub fn put_debug(
     traverse_tree(&mut operation_context)
 }
 
-pub fn int_range(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, key_len: u16, hyperion_callback: HyperionCallback) -> ReturnCode {
+pub fn int_range(root_container_entry: Arc<Mutex<RootContainerEntry>>, key: *mut u8, key_len: u16, hyperion_callback: HyperionCallback) -> ReturnCode {
     let mut tmp_key: [u8; 4096] = [0; 4096];
     let mut rqc: RangeQueryContext = RangeQueryContext {
         key_begin: key,
         current_key: tmp_key.as_mut_ptr(),
-        arena: root_container_entry.arena.as_mut().unwrap().get(),
+        arena: root_container_entry.lock().arena.as_mut().unwrap().get(),
         current_stack_depth: 0,
         current_key_offset: 0,
         key_len: key_len as i16,
@@ -2097,50 +2097,51 @@ pub fn int_range(root_container_entry: &mut RootContainerEntryInner, key: *mut u
     };
     rqc.stack[0] = Some(TraversalContext {
         offset: 0,
-        hyperion_pointer: root_container_entry.hyperion_pointer.unwrap(),
+        hyperion_pointer: root_container_entry.lock().hyperion_pointer.unwrap(),
     });
 
     range_find_first_container(&mut rqc, hyperion_callback);
-    root_container_entry.stats.range_queries += 1;
-    root_container_entry.stats.range_queries_leaves = rqc.traversed_leaves as u32;
+    root_container_entry.lock().stats.range_queries += 1;
+    root_container_entry.lock().stats.range_queries_leaves = rqc.traversed_leaves as u32;
     OK
 }
 
-pub fn int_get(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, key_len: u16, return_value: *mut NodeValue) -> ReturnCode {
+pub fn int_get(root_container_entry: Arc<Mutex<RootContainerEntry>>, key: *mut u8, key_len: u16, return_value: *mut NodeValue) -> ReturnCode {
     let mut ocx = OperationContext::default();
     initialize_operation_context(&mut ocx, Get, root_container_entry, key, key_len);
     ocx.return_value = NonNull::new(return_value);
     let ret = traverse_tree(&mut ocx);
-    unsafe { (*ocx.root_container_entry).stats.gets += 1 };
+    ocx.root_container_entry.lock().stats.gets += 1;
     ret
 }
 
 pub fn int_put(
-    root_container_entry: &mut RootContainerEntryInner, key: *const u8, key_len: u16, input_value: Option<NonNull<NodeValue>>,
+    root_container_entry: Arc<Mutex<RootContainerEntry>>, key: *const u8, key_len: u16, input_value: Option<NonNull<NodeValue>>,
 ) -> ReturnCode {
     let mut ocx = OperationContext::default();
     initialize_operation_context(&mut ocx, Put, root_container_entry, key, key_len);
     ocx.input_value = input_value;
     let ret = traverse_tree(&mut ocx);
     if ocx.header.performed_put() {
-        unsafe { (*ocx.root_container_entry).stats.puts += 1 };
+        ocx.root_container_entry.lock().stats.puts += 1;
     } else {
-        unsafe { (*ocx.root_container_entry).stats.updates += 1 };
+        ocx.root_container_entry.lock().stats.updates += 1;
     }
     ret
 }
 
-pub fn remove(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, key_len: u16) -> ReturnCode {
+pub fn remove(root_container_entry: Arc<Mutex<RootContainerEntry>>, key: *mut u8, key_len: u16) -> ReturnCode {
     let mut ocx = OperationContext::default();
     initialize_operation_context(&mut ocx, Delete, root_container_entry, key, key_len);
     let ret = traverse_tree(&mut ocx);
-    unsafe { (*ocx.root_container_entry).stats.puts += 1 };
+    ocx.root_container_entry.lock().stats.puts += 1;
     ret
 }
 
 use crate::hyperion::components::path_compressed_header::PathCompressedNodeHeader;
 use criterion::black_box;
 use std::io::{BufWriter, Write};
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 

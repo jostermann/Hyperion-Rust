@@ -1,7 +1,7 @@
 use bitfield_struct::bitfield;
 use std::intrinsics::copy;
 use std::ptr::{read_unaligned, write_bytes, write_unaligned};
-
+use std::sync::Arc;
 use crate::hyperion::components::context::ContainerTraversalContext;
 use crate::hyperion::components::jump_table::{
     ContainerJumpTable, ContainerJumpTableEntry, CONTAINER_JUMP_TABLE_ENTRIES, TOP_NODE_JUMP_TABLE_ENTRIES, TOP_NODE_JUMP_TABLE_SHIFT,
@@ -387,18 +387,36 @@ pub struct RootContainerStats {
 }
 
 pub struct RootContainerEntryInner {
+    
+}
+
+pub struct RootContainerEntry {
+    //pub inner: spin::Mutex<RootContainerEntryInner>,
     pub stats: RootContainerStats,
     pub arena: Option<AtomicArena>,
     pub hyperion_pointer: Option<HyperionPointer>,
     pub preprocessor: Preprocessor,
 }
 
-pub struct RootContainerEntry {
-    pub inner: spin::Mutex<RootContainerEntryInner>,
+impl Default for RootContainerEntry {
+    fn default() -> Self {
+        RootContainerEntry {
+            stats: RootContainerStats {
+                puts: 0,
+                gets: 0,
+                updates: 0,
+                range_queries: 0,
+                range_queries_leaves: 0,
+            },
+            arena: None,
+            hyperion_pointer: None,
+            preprocessor: Preprocessor::None,
+        }
+    }
 }
 
 pub struct RootContainerArray {
-    pub root_container_entries: [Option<RootContainerEntry>; ROOT_NODES],
+    pub root_container_entries: [Option<Arc<spin::Mutex<RootContainerEntry>>>; ROOT_NODES],
 }
 
 #[cfg(test)]

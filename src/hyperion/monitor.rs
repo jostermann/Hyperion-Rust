@@ -1,5 +1,4 @@
-/*use crate::hyperion::components::container::{RootContainerArray, ROOT_NODES};
-use crate::hyperion::internals::atomic_pointer::AtomicRootContainerArray;
+use crate::hyperion::components::container::RootContainerArray;
 use crate::hyperion::internals::core::GLOBAL_CONFIG;
 use crate::memorymanager::api::{
     get_compressed_total, get_memory_stats, get_reset_compressed_bytes, get_reset_decompressed_bytes, get_reset_original_compressed,
@@ -7,15 +6,15 @@ use crate::memorymanager::api::{
 };
 use chrono::Local;
 use once_cell::sync::OnceCell;
+use spin::mutex::Mutex;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicI32};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{env, thread};
-use crate::hyperion::api::{ROOT_CONTAINER_ARRAY};
 
 const VERSION: &str = "v1.28.2";
 const MONITOR_INTERVAL_SEC: u64 = 1;
@@ -29,7 +28,7 @@ pub struct MonitorState {
 
 pub static MONITOR_STATE: OnceCell<Arc<Mutex<MonitorState>>> = OnceCell::new();
 
-pub fn spawn_monitor_deamon(logfile_prefix: &str) {
+pub fn spawn_monitor_deamon(root_container_array: Arc<Mutex<RootContainerArray>>, logfile_prefix: &str) {
     let log_path = initialize_logfile(logfile_prefix);
     let monitor_state = Arc::new(Mutex::new(MonitorState {
         logfile_path: log_path.clone(),
@@ -38,10 +37,10 @@ pub fn spawn_monitor_deamon(logfile_prefix: &str) {
 
     let handle = thread::Builder::new()
         .name("monitor_deamon".to_string())
-        .spawn(move || monitor_deamon(&log_path))
+        .spawn(move || monitor_deamon(root_container_array, &log_path))
         .expect("Failed to spawn monitor thread");
 
-    monitor_state.lock().unwrap().thread_handle = Some(handle);
+    monitor_state.lock().thread_handle = Some(handle);
     MONITOR_STATE.set(monitor_state).ok();
 }
 
@@ -55,19 +54,14 @@ pub fn initialize_logfile(prefix: &str) -> PathBuf {
 
 pub fn join_monitor_deamon() {
     if let Some(state_arc) = MONITOR_STATE.get() {
-        let mut state = state_arc.lock().unwrap();
+        let mut state = state_arc.lock();
         if let Some(handle) = state.thread_handle.take() {
             handle.join().expect("Failed to join monitor thread");
         }
     }
 }
 
-fn thread_keep_alive() -> bool {
-    static ALIVE: AtomicBool = AtomicBool::new(true);
-    ALIVE.load(Relaxed)
-}
-
-pub fn monitor_deamon(logfile_prefix: &PathBuf) {
+pub fn monitor_deamon(root_container_array: Arc<Mutex<RootContainerArray>>, logfile_prefix: &PathBuf) {
     let file = File::create(logfile_prefix).expect("Failed to create log file");
     let mut writer = BufWriter::new(file);
 
@@ -110,22 +104,23 @@ pub fn monitor_deamon(logfile_prefix: &PathBuf) {
         let _ = FLUSH_COUNT.fetch_sub(1, Relaxed);
 
         memory_settings = get_memory_stats(true);
-        
-        let mut write_lock = ROOT_CONTAINER_ARRAY.write();
 
-        for i in 0..write_lock.root_container_entries.len() {
-            let root_entry = write_lock.root_container_entries[i].as_mut().unwrap();
-            let mut data = root_entry.inner.lock();
-            current_puts += data.stats.puts as u64;
-            data.stats.puts = 0;
-            current_gets += data.stats.gets as u64;
-            data.stats.gets = 0;
-            current_updates += data.stats.updates as u64;
-            data.stats.updates = 0;
-            current_rangequeries += data.stats.range_queries as i64;
-            data.stats.range_queries = 0;
-            rq_leaves += data.stats.range_queries_leaves as u64;
-            data.stats.range_queries_leaves = 0;
+        {
+            let mut array_guard = root_container_array.lock();
+
+            for i in 0..array_guard.root_container_entries.len() {
+                let mut entry_guard = array_guard.root_container_entries[i].as_mut().unwrap().lock();
+                current_puts += entry_guard.stats.puts as u64;
+                entry_guard.stats.puts = 0;
+                current_gets += entry_guard.stats.gets as u64;
+                entry_guard.stats.gets = 0;
+                current_updates += entry_guard.stats.updates as u64;
+                entry_guard.stats.updates = 0;
+                current_rangequeries += entry_guard.stats.range_queries as i64;
+                entry_guard.stats.range_queries = 0;
+                rq_leaves += entry_guard.stats.range_queries_leaves as u64;
+                entry_guard.stats.range_queries_leaves = 0;
+            }
         }
 
         total_puts += current_puts;
@@ -159,4 +154,3 @@ pub fn monitor_deamon(logfile_prefix: &PathBuf) {
     }
     writer.flush().unwrap();
 }
-*/

@@ -22,7 +22,7 @@ triestats = []
 
 
 [profile.dev]
-debug = true
+#debug = true
 opt-level = 3
 
 [profile.release]
@@ -30,7 +30,7 @@ opt-level = 3
 panic = "abort"
 
 [profile.test]
-debug = true
+#debug = true
 opt-level = 3
 
 #[lib]

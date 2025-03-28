@@ -14,7 +14,7 @@ use std::ops::DerefMut;
 use std::ptr::{read_unaligned, write_unaligned, NonNull};
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 lazy_static! {
     static ref TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -411,7 +411,7 @@ fn test_container_split_08() {
 #[test]
 fn ycsb() -> Result<(), io::Error> {
     let _lock = TEST_MUTEX.lock().unwrap();
-    let mut root_container_array = bootstrap();
+    let root_container_array = bootstrap(Option::from("log"));
 
     let file = File::open("/home/jostermann/Dokumente/Hyperion-Rust/kv_input.txt")?;
     let reader = BufReader::new(file);
@@ -423,7 +423,7 @@ fn ycsb() -> Result<(), io::Error> {
             let mut key_bytes = key.as_bytes();
             let mut val = NodeValue { value };
             unsafe {
-                put(&mut root_container_array, key_bytes.as_ptr() as *mut u8, key_bytes.len() as u16, NonNull::new(&mut val));
+                put(&Arc::clone(&root_container_array), key_bytes.as_ptr() as *mut u8, key_bytes.len() as u16, NonNull::new(&mut val));
             }
         }
     }

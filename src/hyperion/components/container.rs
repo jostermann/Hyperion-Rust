@@ -3,11 +3,14 @@ use std::intrinsics::copy;
 use std::ptr::{read_unaligned, write_bytes, write_unaligned};
 
 use crate::hyperion::components::context::ContainerTraversalContext;
-use crate::hyperion::components::jump_table::{ContainerJumpTable, ContainerJumpTableEntry, CONTAINER_JUMP_TABLE_ENTRIES, TOP_NODE_JUMP_TABLE_ENTRIES, TOP_NODE_JUMP_TABLE_SHIFT};
+use crate::hyperion::components::jump_table::{
+    ContainerJumpTable, ContainerJumpTableEntry, CONTAINER_JUMP_TABLE_ENTRIES, TOP_NODE_JUMP_TABLE_ENTRIES, TOP_NODE_JUMP_TABLE_SHIFT,
+};
 use crate::hyperion::components::node_header::{as_top_node, get_offset_jump_successor, get_offset_jump_table};
 use crate::hyperion::components::operation_context::OperationContext;
 use crate::hyperion::internals::atomic_pointer::{AtomicArena, AtomicEmbContainer};
 use crate::hyperion::internals::core::{log_to_file, GLOBAL_CONFIG};
+use crate::hyperion::preprocessor::key_preprocessor::Preprocessor;
 use crate::memorymanager::api::{get_pointer, malloc, Arena, HyperionPointer, NUM_ARENAS};
 
 /// The maximum amount of embedded containers.
@@ -376,17 +379,18 @@ pub struct ContainerLink {
 pub const ROOT_NODES: usize = if NUM_ARENAS > 1 { 256 } else { 1 };
 
 pub struct RootContainerStats {
-    pub puts: i32,
-    pub gets: i32,
-    pub updates: i32,
-    pub range_queries: i32,
-    pub range_queries_leaves: i32,
+    pub puts: u32,
+    pub gets: u32,
+    pub updates: u32,
+    pub range_queries: u32,
+    pub range_queries_leaves: u32,
 }
 
 pub struct RootContainerEntryInner {
     pub stats: RootContainerStats,
     pub arena: Option<AtomicArena>,
-    pub hyperion_pointer: Option<HyperionPointer>, // TODO KEY_PPP
+    pub hyperion_pointer: Option<HyperionPointer>,
+    pub preprocessor: Preprocessor,
 }
 
 pub struct RootContainerEntry {

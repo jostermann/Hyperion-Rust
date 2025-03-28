@@ -1,9 +1,9 @@
-use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T2};
-use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::atomic::Ordering::Relaxed;
 use crate::memorymanager::internals::simd_avx2::*;
 use crate::memorymanager::internals::simd_sse4_1::*;
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T2};
+use std::ffi::c_void;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// Applies all SIMD functions which take a raw pointer as argument
 pub(crate) fn apply_simd<T, R>(field: &[T], simd_func: unsafe fn(*const c_void) -> R) -> R {
@@ -224,7 +224,7 @@ unsafe fn a_in_b_256_fallback(a: u16, p_b256: *const u16) -> i32 {
 }
 
 /// Returns if `a` is contained in `p_256`.
-pub(crate) unsafe fn a_in_b_256(a: u16, p_b256: *const u16) -> i32 {
+pub unsafe fn a_in_b_256(a: u16, p_b256: *const u16) -> i32 {
     if p_b256.is_null() {
         return -1;
     }

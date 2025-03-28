@@ -1,8 +1,8 @@
-use std::ptr::null_mut;
 use bitfield_struct::bitfield;
+use std::ptr::null_mut;
 
 use crate::memorymanager::components::bin::Bin;
-use crate::memorymanager::components::metabin::{Metabin, METABIN_RING_SIZE, META_MAXMETABINS};
+use crate::memorymanager::components::metabin::{Metabin, METABIN_RING_SIZE};
 use crate::memorymanager::internals::allocator::AllocatedBy;
 use crate::memorymanager::internals::simd_common::apply_sorted_insert;
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
@@ -195,7 +195,7 @@ impl Superbin {
             if self.header.metabins_initialized() % METABIN_POINTER_INCREMENT == 0 {
                 let _ = self.metabins.check_extend_pointer_array(metabins_initialized as usize);
             }
-            
+
             let allocation_successful: bool = self.metabins.new_metabin_at(metabins_initialized as usize);
 
             if allocation_successful {
@@ -212,7 +212,6 @@ impl Superbin {
 
 /// Returns the superbin id for the specified size.
 pub(crate) fn get_superbin_id(size: u32) -> u8 {
-    /*(size > 0 && size <= (63 * INCREMENT_SIZE) as u32).then(|| (((size - 1) / INCREMENT_SIZE as u32) + 1) as u8).unwrap_or(0)*/
     if size <= (63 * INCREMENT_SIZE) as u32 {
         (((size - 1) / INCREMENT_SIZE as u32) + 1) as u8
     } else {

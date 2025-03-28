@@ -27,19 +27,19 @@ use crate::hyperion::components::return_codes::ReturnCode::{GetFailureNoNode, Ke
 use crate::hyperion::components::sub_node::ChildLinkType;
 use crate::hyperion::components::sub_node::ChildLinkType::{Link, PathCompressed};
 use crate::hyperion::components::top_node::TopNode;
-use crate::hyperion::preprocessor::key_preprocessor::KeyProcessingIDs;
+use crate::hyperion::preprocessor::key_preprocessor::Preprocessor;
 use crate::memorymanager::api::{
     free, get_all_chained_pointer, get_chained_pointer, get_pointer, is_chained_pointer, malloc, malloc_chained, reallocate, register_chained_memory,
     Arena, HyperionPointer, SegmentChain, CONTAINER_MAX_SPLITS, CONTAINER_SPLIT_BITS,
 };
 use bitfield_struct::bitfield;
 use libc::{calloc, memcmp, size_t};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
-use std::ptr::{copy, copy_nonoverlapping, null_mut, read_unaligned, write_bytes, write_unaligned};
+use std::ptr::{copy, copy_nonoverlapping, null_mut, read_unaligned, write_bytes, write_unaligned, NonNull};
 use std::{fs, io};
-use std::cell::RefCell;
 
 pub const CONTAINER_SPLIT_THRESHOLD_A: usize = 12288;
 pub const CONTAINER_SPLIT_THRESHOLD_B: usize = 65536;
@@ -50,9 +50,9 @@ pub struct GlobalConfigurationHeader {
     #[bits(1)]
     pub initialized: u8,
     #[bits(1)]
-    pub thread_keep_alive: u8,
+    pub thread_keep_alive: bool,
     #[bits(2)]
-    pub preprocessor_strategy: KeyProcessingIDs,
+    pub preprocessor_strategy: Preprocessor,
     #[bits(8)]
     pub container_size_increment: u32,
     #[bits(16)]
@@ -75,8 +75,8 @@ pub static GLOBAL_CONFIG: Lazy<RwLock<GlobalConfiguration>> = Lazy::new(|| {
     RwLock::new(GlobalConfiguration {
         header: GlobalConfigurationHeader::new()
             .with_initialized(0)
-            .with_thread_keep_alive(0)
-            .with_preprocessor_strategy(KeyProcessingIDs::None)
+            .with_thread_keep_alive(false)
+            .with_preprocessor_strategy(Preprocessor::None)
             .with_container_size_increment(32)
             .with_io_threads(1)
             .with_container_embedding_high_watermark(0),
@@ -300,7 +300,7 @@ pub fn split_container(ocx: &mut OperationContext) -> bool {
     let required_left = (ctx.current_container_offset as i32 - old_container_head as i32) + get_container_head_size() as i32;
     let target_size_left = ((required_left / roundup_factor) + 2) * roundup_factor;
     let malloc_size_left = target_size_left + 128;
-    let is_chain = is_chained_pointer(ocx.arena.unwrap(), ocx.embedded_traversal_context.root_container_pointer);
+    let is_chain = is_chained_pointer(ocx.arena, ocx.embedded_traversal_context.root_container_pointer);
     log_to_file(&format!(
         "req left: {}, target left: {}, malloc left: {}, is chain: {}",
         required_left, target_size_left, malloc_size_left, is_chain as u8
@@ -397,7 +397,7 @@ pub fn split_container(ocx: &mut OperationContext) -> bool {
 
     if is_chain {
         register_chained_memory(
-            ocx.arena.unwrap(),
+            ocx.arena,
             ocx.embedded_traversal_context.root_container_pointer,
             left_init_char,
             left_data,
@@ -406,7 +406,7 @@ pub fn split_container(ocx: &mut OperationContext) -> bool {
             overallocated_left,
         );
         register_chained_memory(
-            ocx.arena.unwrap(),
+            ocx.arena,
             ocx.embedded_traversal_context.root_container_pointer,
             right_init_char as u8,
             right_data,
@@ -416,7 +416,7 @@ pub fn split_container(ocx: &mut OperationContext) -> bool {
         );
     } else {
         // Free the old container
-        free(ocx.arena.unwrap(), ocx.embedded_traversal_context.root_container_pointer);
+        free(ocx.arena, ocx.embedded_traversal_context.root_container_pointer);
     }
 
     let mut tmp_ctx = ContainerTraversalContext {
@@ -466,7 +466,7 @@ pub fn scan_meta_embedded(
     log_to_file("scan_meta_embedded");
     let mut key;
 
-    log_to_file(&format!("Next embedded container size: {}", (ocx.get_next_embedded_container().size() as usize)));
+    log_to_file(&format!("Next embedded container size: {}", ocx.get_next_embedded_container().size() as usize));
 
     while ctx.current_container_offset < (ocx.get_next_embedded_container().size() as usize) {
         let node_head = unsafe { (ocx.get_next_embedded_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
@@ -701,7 +701,7 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
 
         if !skip_all && as_top_node(node_head).container_type() != NodeState::TopNode {
             ocx.jump_context.sub_nodes_seen = 0;
-            log_to_file(&format!("top node"));
+            log_to_file("top node");
 
             loop {
                 log_to_file("loop top node meta");
@@ -742,7 +742,7 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
             topnodes_seen -= 1;
 
             if topnodes_seen == 0 && (ocx.get_root_container().size() > (DEFAULT_CONTAINER_SIZE * 4)) {
-                log_to_file(&format!("recursive scan_meta"));
+                log_to_file("recursive scan_meta");
                 ocx.flush_jump_table_sub_context();
                 create_container_jump_table(ocx, ctx);
                 ctx.flush();
@@ -803,12 +803,8 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
     while ocx.header.next_container_valid() != ContainerValidTypes::Invalid {
         log_to_file("traverse tree head");
         let mut ctx = ContainerTraversalContext {
-            first_char: unsafe { *(ocx.key.unwrap()) },
-            second_char: if ocx.key_len_left > 1 {
-                unsafe { *(ocx.key.unwrap().add(1)) }
-            } else {
-                0
-            },
+            first_char: unsafe { *(ocx.key) },
+            second_char: if ocx.key_len_left > 1 { unsafe { *(ocx.key.add(1)) } } else { 0 },
             ..ContainerTraversalContext::default()
         };
         log_to_file(&format!("First char: {}, second char: {}", ctx.first_char, ctx.second_char));
@@ -827,19 +823,24 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
 
         if ocx.header.next_container_valid() == ContainerValid {
             ocx.embedded_traversal_context.root_container =
-                get_pointer(ocx.arena.expect(ERR_NO_ARENA), ocx.next_container_pointer.expect(ERR_NO_POINTER), 0, ctx.first_char) as *mut Container;
+                get_pointer(ocx.arena, ocx.next_container_pointer.expect(ERR_NO_POINTER), 0, ctx.first_char) as *mut Container;
             assert!(!ocx.embedded_traversal_context.root_container.is_null());
             ocx.header.set_next_container_valid(ContainerValidTypes::Invalid);
             ocx.embedded_traversal_context.root_container_pointer = ocx.next_container_pointer.unwrap();
             log_to_file(&format!("Root container pointer: {:?}", unsafe { *ocx.embedded_traversal_context.root_container_pointer }));
             log_to_file(&format!("Root container: {:?}", unsafe { *ocx.embedded_traversal_context.root_container }));
 
-            if ctx.first_char == 50 && ctx.second_char == 55 && ocx.key_len_left == 17 && ocx.get_root_container().size() == 672
-                && ocx.get_root_container().free_bytes() == 1 && unsafe { (*(ocx.embedded_traversal_context.root_container_pointer)).chunk_id() } == 2196 {
+            if ctx.first_char == 50
+                && ctx.second_char == 55
+                && ocx.key_len_left == 17
+                && ocx.get_root_container().size() == 672
+                && ocx.get_root_container().free_bytes() == 1
+                && unsafe { (*(ocx.embedded_traversal_context.root_container_pointer)).chunk_id() } == 2196
+            {
                 TARGET_DUMP_FOUND.store(true, Relaxed);
             }
 
-            dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
+            //dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
 
             match ocx.header.command() {
                 Get => {
@@ -926,11 +927,9 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
                 }
             }
         }
-        dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
+        //dump_memory(ocx.get_root_container_pointer() as *const u8, ocx.get_root_container().size() as usize, ocx).expect("");
 
-        if let Some(key) = ocx.key {
-            unsafe { ocx.key = Some(key.add(2)) };
-        }
+        unsafe { ocx.key = ocx.key.add(2) };
         ocx.key_len_left -= 2;
     }
     OK
@@ -1314,7 +1313,7 @@ struct TrieStats {
     pub cont_splitting_increment: [i64; 4],
 }
 
-use crate::hyperion::internals::errors::{ERR_EMPTY_EMB_STACK_POS, ERR_NO_ARENA, ERR_NO_NODE, ERR_NO_POINTER, ERR_NO_SUCCESSOR, ERR_NO_VALUE};
+use crate::hyperion::internals::errors::{ERR_EMPTY_EMB_STACK_POS, ERR_NO_NODE, ERR_NO_POINTER, ERR_NO_SUCCESSOR, ERR_NO_VALUE};
 use once_cell::sync::Lazy;
 use spin::RwLock;
 
@@ -1343,13 +1342,13 @@ pub fn stats_container(container: *mut Container) {
 
 pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback) -> ReturnCode {
     let tree_ctx = &mut rqc.stack[rqc.current_stack_depth as usize].expect(ERR_NO_VALUE);
-    log_range(&format!("range_report_container: rqc current_key_offset: {}, stack_depth {}", rqc.current_key_offset, rqc.current_stack_depth));
+    //log_range(&format!("range_report_container: rqc current_key_offset: {}, stack_depth {}", rqc.current_key_offset, rqc.current_stack_depth));
 
     let (top, sub) = unsafe {
         let top = rqc.current_key.add(rqc.current_key_offset as usize);
         (top, top.add(1))
     };
-    log_range(&format!("range_report_container: top {}, sub {}", unsafe { *top }, unsafe { *sub }));
+    //log_range(&format!("range_report_container: top {}, sub {}", unsafe { *top }, unsafe { *sub }));
 
     let mut segment_chain = SegmentChain::default();
 
@@ -1359,10 +1358,10 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
         segment_chain.pointer[0].store(get_pointer(rqc.arena, &mut tree_ctx.hyperion_pointer, 0, 0));
         1
     };
-    log_range(&format!("element count: {}", element_count));
+    //log_range(&format!("element count: {}", element_count));
 
     for i in 0..element_count {
-        log_range(&format!("for i: {}", i));
+        //log_range(&format!("for i: {}", i));
         let container = segment_chain.pointer[i].get() as *mut Container;
         stats_container(container);
         unsafe { *top = segment_chain.chars[i] };
@@ -1370,7 +1369,7 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
         let data_end = unsafe { (*container).size() - (*container).free_bytes() as u32 };
 
         loop {
-            log_range("loop");
+            //log_range("loop");
             let node_head = unsafe { (container as *mut u8).add(tree_ctx.offset) as *mut NodeHeader };
 
             match as_top_node(node_head).container_type() {
@@ -1378,13 +1377,13 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
                     let delta = as_top_node(node_head).delta();
                     unsafe {
                         *top = if delta != 0 {
-                            log_range(&format!("current top: {}", unsafe { *top }));
-                            log_range(&format!("top delta: {}", as_top_node(node_head).delta()));
+                            //log_range(&format!("current top: {}", unsafe { *top }));
+                            //log_range(&format!("top delta: {}", as_top_node(node_head).delta()));
                             *top + delta
                         } else {
                             (*top).wrapping_add(*(node_head as *mut u8).add(size_of::<NodeHeader>()))
                         };
-                        log_range(&format!("set top to: {}", *top));
+                        //log_range(&format!("set top to: {}", *top));
                     }
 
                     if !call_top_node(node_head, rqc, cb) {
@@ -1404,10 +1403,10 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
                     let delta = as_sub_node(node_head).delta();
                     unsafe {
                         *sub = if delta != 0 {
-                            log_range(&format!("current sub: {}, sub delta: {}", *sub, delta));
+                            //log_range(&format!("current sub: {}, sub delta: {}", *sub, delta));
                             *sub + delta
                         } else {
-                            log_range(&format!("set sub to: {}", *sub));
+                            //log_range(&format!("set sub to: {}", *sub));
                             *(node_head as *mut u8).add(size_of::<NodeHeader>())
                         };
                     }
@@ -1434,7 +1433,7 @@ pub fn range_report_container(rqc: &mut RangeQueryContext, cb: HyperionCallback)
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, container: *mut EmbeddedContainer) -> ReturnCode {
-    log_range("range_find_first_embedded");
+    //log_range("range_find_first_embedded");
     #[cfg(feature = "triestats")]
     {
         TRIE_STATS.write().num_embedded_container += 1;
@@ -1476,13 +1475,13 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
 
                 if as_top_node(node_head).container_type() == NodeState::TopNode {
                     unsafe {
-                        log_range(&format!("current top: {}", unsafe { *top }));
+                        //log_range(&format!("current top: {}", unsafe { *top }));
                         *top = if as_top_node(node_head).delta() != 0 {
                             as_top_node(node_head).delta()
                         } else {
                             *(node_head as *mut u8).add(size_of::<NodeHeader>())
                         };
-                        log_range(&format!("set top to: {}", *top));
+                        //log_range(&format!("set top to: {}", *top));
                     }
 
                     #[cfg(feature = "triestats")]
@@ -1508,19 +1507,19 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
                         return OK;
                     }
                     embedded_offset += get_offset_top_node(node_head);
-                    log_range(&format!("update1: {}", embedded_offset));
+                    //log_range(&format!("update1: {}", embedded_offset));
                     unsafe {
                         *sub = 0;
                     }
                 } else {
                     unsafe {
-                        log_range(&format!("current sub: {}", unsafe { *sub }));
+                        //log_range(&format!("current sub: {}", unsafe { *sub }));
                         *sub = if as_sub_node(node_head).delta() != 0 {
                             as_sub_node(node_head).delta()
                         } else {
                             *(node_head as *mut u8).add(size_of::<NodeHeader>())
                         };
-                        log_range(&format!("set sub to: {}", *sub));
+                        //log_range(&format!("set sub to: {}", *sub));
                     }
 
                     #[cfg(feature = "triestats")]
@@ -1603,7 +1602,7 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
                         continue;
                     }
                     embedded_offset += get_offset_sub_node(node_head);
-                    log_range(&format!("update2: {}", embedded_offset));
+                    //log_range(&format!("update2: {}", embedded_offset));
                 }
             },
             _ => {
@@ -1623,7 +1622,7 @@ pub fn range_find_first_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallba
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, container: *mut EmbeddedContainer) -> ReturnCode {
-    log_range("range_report_embedded");
+    //log_range("range_report_embedded");
     #[cfg(feature = "triestats")]
     {
         TRIE_STATS.write().num_embedded_container += 1;
@@ -1718,7 +1717,7 @@ pub fn range_report_embedded(rqc: &mut RangeQueryContext, cb: HyperionCallback, 
 }
 
 pub fn check_path_compressed_key(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext) -> i32 {
-    log_range("check_path_compressed_key");
+    //log_range("check_path_compressed_key");
     let mut tmp_key: [u8; 128] = [0; 128];
     let pc_key_size;
     let pc_key: *mut u8;
@@ -1770,7 +1769,7 @@ enum RangeJumpLabels {
 }
 
 pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallback) -> ReturnCode {
-    log_range("range_find_first_container");
+    //log_range("range_find_first_container");
     let mut inscope_top = 0;
     let mut ends_here = false;
     let mut look_for_sub: *mut u8 = null_mut();
@@ -1981,7 +1980,7 @@ pub fn range_find_first_container(rqc: &mut RangeQueryContext, cb: HyperionCallb
 }
 
 pub fn handle_report_sub_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryContext, cb: HyperionCallback) -> bool {
-    log_range("handle_report_sub_node");
+    //log_range("handle_report_sub_node");
     if !call_sub_node(node_head, rqc, cb) {
         return false;
     }
@@ -2054,28 +2053,27 @@ pub fn handle_report_sub_node(node_head: *mut NodeHeader, rqc: &mut RangeQueryCo
 }
 
 pub fn initialize_operation_context(
-    ocx: &mut OperationContext, operation_command: OperationCommand, root_container_entry: &mut RootContainerEntryInner, key: *mut u8, key_len: u16,
+    ocx: &mut OperationContext, operation_command: OperationCommand, root_container_entry: &mut RootContainerEntryInner, key: *const u8, key_len: u16,
 ) {
     ocx.header.set_command(operation_command);
     ocx.header.set_next_container_valid(ContainerValid);
-    ocx.root_container_entry = Some(root_container_entry as *mut RootContainerEntryInner);
-    ocx.arena = Some(root_container_entry.arena.as_mut().unwrap().get());
+    ocx.root_container_entry = root_container_entry as *mut RootContainerEntryInner;
+    ocx.arena = root_container_entry.arena.as_mut().unwrap().get();
     if let Some(ref mut hyperion_pointer) = root_container_entry.hyperion_pointer {
         ocx.next_container_pointer = Some(hyperion_pointer as *mut HyperionPointer);
     }
-    //ocx.next_container_pointer = Some(&mut root_container_entry.hyperion_pointer.unwrap() as *mut HyperionPointer);
-    ocx.key = Some(key);
+    ocx.key = key;
     ocx.key_len_left = key_len as i32;
 }
 
 pub fn put_debug(
-    arena: *mut Arena, container_pointer: &mut HyperionPointer, key: &mut u8, key_len: u32, node_value: Option<*mut NodeValue>,
+    arena: *mut Arena, container_pointer: &mut HyperionPointer, key: &mut u8, key_len: u32, node_value: Option<NonNull<NodeValue>>,
 ) -> ReturnCode {
     let mut operation_context: OperationContext = OperationContext {
         key_len_left: key_len as i32,
-        key: Some(key as *mut u8),
+        key: key as *const u8,
         next_container_pointer: Some(container_pointer as *mut HyperionPointer),
-        arena: Some(arena),
+        arena,
         input_value: node_value,
         ..OperationContext::default()
     };
@@ -2104,28 +2102,30 @@ pub fn int_range(root_container_entry: &mut RootContainerEntryInner, key: *mut u
 
     range_find_first_container(&mut rqc, hyperion_callback);
     root_container_entry.stats.range_queries += 1;
-    root_container_entry.stats.range_queries_leaves = rqc.traversed_leaves;
+    root_container_entry.stats.range_queries_leaves = rqc.traversed_leaves as u32;
     OK
 }
 
 pub fn int_get(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, key_len: u16, return_value: *mut NodeValue) -> ReturnCode {
     let mut ocx = OperationContext::default();
     initialize_operation_context(&mut ocx, Get, root_container_entry, key, key_len);
-    ocx.return_value = Some(return_value);
+    ocx.return_value = NonNull::new(return_value);
     let ret = traverse_tree(&mut ocx);
-    unsafe { (*(ocx.root_container_entry.unwrap())).stats.gets += 1 };
+    unsafe { (*ocx.root_container_entry).stats.gets += 1 };
     ret
 }
 
-pub fn int_put(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, key_len: u16, return_value: Option<*mut NodeValue>) -> ReturnCode {
+pub fn int_put(
+    root_container_entry: &mut RootContainerEntryInner, key: *const u8, key_len: u16, input_value: Option<NonNull<NodeValue>>,
+) -> ReturnCode {
     let mut ocx = OperationContext::default();
     initialize_operation_context(&mut ocx, Put, root_container_entry, key, key_len);
-    ocx.input_value = return_value;
+    ocx.input_value = input_value;
     let ret = traverse_tree(&mut ocx);
     if ocx.header.performed_put() {
-        unsafe { (*(ocx.root_container_entry.unwrap())).stats.puts += 1 };
+        unsafe { (*ocx.root_container_entry).stats.puts += 1 };
     } else {
-        unsafe { (*(ocx.root_container_entry.unwrap())).stats.updates += 1 };
+        unsafe { (*ocx.root_container_entry).stats.updates += 1 };
     }
     ret
 }
@@ -2134,7 +2134,7 @@ pub fn remove(root_container_entry: &mut RootContainerEntryInner, key: *mut u8, 
     let mut ocx = OperationContext::default();
     initialize_operation_context(&mut ocx, Delete, root_container_entry, key, key_len);
     let ret = traverse_tree(&mut ocx);
-    unsafe { (*(ocx.root_container_entry.unwrap())).stats.puts += 1 };
+    unsafe { (*ocx.root_container_entry).stats.puts += 1 };
     ret
 }
 
@@ -2148,14 +2148,14 @@ const LOG: bool = false;
 static FD: AtomicUsize = AtomicUsize::new(0);
 static DUMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static CURRENT_LINES: AtomicU64 = AtomicU64::new(0);
-static DELETE_OLD_LOGS: AtomicBool = AtomicBool::new(true);
-const LOG_MIN: usize = 10000;
-const LOG_MAX: usize = 14000;
+static DELETE_OLD_LOGS: AtomicBool = AtomicBool::new(false);
+const LOG_MIN: usize = 12000;
+const LOG_MAX: usize = 18000;
 static TARGET_DUMP_FOUND: AtomicBool = AtomicBool::new(false);
 const DUMP_MEMORY: bool = false;
 
 thread_local! {
-    static LOG_FILE: RefCell<Option<BufWriter<File>>> = RefCell::new(None);
+    static LOG_FILE: RefCell<Option<BufWriter<File>>> = const { RefCell::new(None) };
 }
 
 pub fn delete_log_files() -> io::Result<()> {
@@ -2173,6 +2173,7 @@ pub fn delete_log_files() -> io::Result<()> {
     Ok(())
 }
 
+//noinspection RsConstantConditionIf
 pub fn log_to_file(message: &str) {
     if DELETE_OLD_LOGS.load(Relaxed) {
         DELETE_OLD_LOGS.store(false, Relaxed);
@@ -2209,7 +2210,7 @@ pub fn log_to_file(message: &str) {
                 Err(e) => {
                     eprintln!("Fehler beim Öffnen der Log-Datei {}", e);
                     return;
-                }
+                },
             }
         }
 
@@ -2222,7 +2223,8 @@ pub fn log_to_file(message: &str) {
     });
 }
 
-pub fn dump_memory(ptr: *const u8, size: usize, ocx: &mut OperationContext) -> std::io::Result<()> {
+//noinspection RsConstantConditionIf
+pub fn dump_memory(ptr: *const u8, size: usize, ocx: &mut OperationContext) -> io::Result<()> {
     if !DUMP_MEMORY {
         return Ok(());
     }
@@ -2239,7 +2241,7 @@ pub fn dump_memory(ptr: *const u8, size: usize, ocx: &mut OperationContext) -> s
         return Ok(());
     }
 
-    let mut file = File::create(&format!("./logs/dump{}_{}.log", FD.load(Relaxed), DUMP_COUNTER.load(Relaxed)))?;
+    let mut file = File::create(format!("./logs/dump{}_{}.log", FD.load(Relaxed), DUMP_COUNTER.load(Relaxed)))?;
     let _ = writeln!(file, "Root container pointer: {:?}", ocx.embedded_traversal_context.root_container_pointer);
     let _ = writeln!(file, "Root container: {:?}\n", unsafe { *ocx.embedded_traversal_context.root_container });
     let mut writer = BufWriter::new(file);

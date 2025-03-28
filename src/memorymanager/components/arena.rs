@@ -1,20 +1,16 @@
+use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS};
+use crate::memorymanager::components::metabin::Metabin;
+use crate::memorymanager::components::superbin::{Superbin, SUPERBIN_ARRAY_MAXSIZE};
+use crate::memorymanager::internals::allocator::free_mmap;
+use crate::memorymanager::internals::compression::{CompressionSlidingWindow, SLIDING_WINDOW_SIZE};
+use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
+use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 use lazy_static::lazy_static;
 use spin::mutex::Mutex;
 use spin::{MutexGuard, RwLock};
 use std::array::from_fn;
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Once;
-use backtrace::Backtrace;
-use libc::{mprotect, MAP_ANON, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE, SIGSEGV};
-use signal_hook::flag::register;
-use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS};
-use crate::memorymanager::components::metabin::Metabin;
-use crate::memorymanager::components::superbin::{Superbin, SUPERBIN_ARRAY_MAXSIZE};
-use crate::memorymanager::internals::allocator::{allocate_mmap, free_mmap};
-use crate::memorymanager::internals::compression::{CompressionSlidingWindow, SLIDING_WINDOW_SIZE};
-use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
-use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 
 pub const NUM_ARENAS: usize = 1;
 pub(crate) const COMPRESSION: usize = 16646144;

@@ -1,14 +1,14 @@
-use std::ptr::null_mut;
-use bitfield_struct::bitfield;
 use crate::hyperion::api::log_to_file;
 use crate::memorymanager::components::superbin::Superbin;
-use crate::memorymanager::internals::allocator::{allocate_mmap, auto_allocate_memory, auto_free_memory, AllocatedBy};
 use crate::memorymanager::internals::allocator::AllocatedBy::Mmap;
+use crate::memorymanager::internals::allocator::{allocate_mmap, auto_free_memory, AllocatedBy};
 use crate::memorymanager::internals::compression::CompressionState;
 use crate::memorymanager::internals::simd_common::{all_bits_set_4096, apply_simd, count_set_bits, get_index_first_set_bit_4096_2};
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
+use bitfield_struct::bitfield;
+use std::ptr::null_mut;
 
 pub(crate) const BINOFFSET_BITS: u8 = 12;
 pub(crate) const BIN_ELEMENTS: usize = 1 << BINOFFSET_BITS; // 4096
@@ -53,7 +53,7 @@ impl Default for Bin {
     fn default() -> Self {
         Bin {
             header: BinHeader::new()
-                .with_compression_state(CompressionState::NONE)
+                .with_compression_state(CompressionState::None)
                 .with_allocated_by(Mmap)
                 .with_chance2nd_read(0)
                 .with_chance2nd_alloc(0),
@@ -131,10 +131,6 @@ impl Bin {
     /// Returns `false` if there are free chunks available.
     pub(crate) fn is_fully_occupied(&self) -> bool {
         !apply_simd(&self.chunk_usage_mask, all_bits_set_4096)
-        // match apply_simd(&self.chunk_usage_mask, all_bits_set_4096) {
-        // true => false,
-        // false => true,
-        // }
     }
 
     /// Checks if any chunk is free in the bin.
@@ -152,10 +148,10 @@ impl Bin {
     /// cache in the superbin is reset. If there is no cached data, a new memory area is allocated
     /// for the chunks and the allocation type in the header is updated.
     pub(crate) fn initialize(&mut self, superbin: &mut Superbin) {
-        self.set_flags(CompressionState::NONE, Mmap as u8, 0, 0);
+        self.set_flags(CompressionState::None, Mmap as u8, 0, 0);
         self.chunks = AtomicMemoryPointer::new();
         self.chunk_usage_mask.fill(u32::MAX);
-        log_to_file(&format!("Bin is not initialized"));
+        log_to_file("Bin is not initialized");
 
         if superbin.has_cached_bin() {
             self.chunks.clone_from(&superbin.bin_cache);
@@ -210,7 +206,7 @@ impl Bin {
         }
         let bin_size: usize = size
             * match self.header.compression_state() {
-                CompressionState::DEFLATE => BIN_ELEMENTS_DEFLATED,
+                CompressionState::Deflate => BIN_ELEMENTS_DEFLATED,
                 _ => BIN_ELEMENTS,
             };
 

@@ -1,4 +1,5 @@
-use crate::hyperion::components::node::NodeType;
+use bitfield_struct::bitfield;
+use std::intrinsics::copy_nonoverlapping;
 
 const ENCODING_MAP_PERFOPT: [u8; 256] = [
     70, 86, 102, 118, 134, 150, 166, 182, 198, 245, 6, 38, 54, 22, 214, 230, 246, 7, 23, 39, 55, 71, 87, 103, 119, 135, 151, 167, 183, 199, 215, 231,
@@ -25,7 +26,7 @@ const ENCODING_MAP_MEMORYOPT: [u8; 256] = [
 ];
 
 #[derive(Debug, PartialOrd, PartialEq)]
-pub enum KeyProcessingIDs {
+pub enum Preprocessor {
     None = 0,
     UniformKeyDistributionSingleThread = 1,
     UniformKeyDistributionMultiThread = 2,
@@ -33,7 +34,7 @@ pub enum KeyProcessingIDs {
     EnglishLanguageDataPerformance = 4,
 }
 
-impl KeyProcessingIDs {
+impl Preprocessor {
     /// Transforms its states into a 2 bit representation.
     pub(crate) const fn into_bits(self) -> u8 {
         self as _
@@ -45,12 +46,104 @@ impl KeyProcessingIDs {
     /// Panics if an invalid processor type was found.
     pub(crate) const fn from_bits(value: u8) -> Self {
         match value {
-            0 => KeyProcessingIDs::None,
-            1 => KeyProcessingIDs::UniformKeyDistributionSingleThread,
-            2 => KeyProcessingIDs::UniformKeyDistributionMultiThread,
-            3 => KeyProcessingIDs::EnglishLanguageDataMemory,
-            4 => KeyProcessingIDs::EnglishLanguageDataPerformance,
+            0 => Preprocessor::None,
+            1 => Preprocessor::UniformKeyDistributionSingleThread,
+            2 => Preprocessor::UniformKeyDistributionMultiThread,
+            3 => Preprocessor::EnglishLanguageDataMemory,
+            4 => Preprocessor::EnglishLanguageDataPerformance,
             _ => panic!("Use of undefined node type"),
         }
+    }
+}
+
+pub type PreprocessCallbackInterface = fn(*const u8, &mut u16, *mut u8);
+
+#[bitfield(u32)]
+struct TransformUniformMTKeyBitmap {
+    #[bits(6)]
+    pub a: u32,
+    #[bits(4)]
+    pub b: u32,
+    #[bits(8)]
+    pub c: u32,
+    #[bits(6)]
+    pub d: u32,
+    #[bits(8)]
+    __: u32,
+}
+
+#[bitfield(u32)]
+struct TransformUniformSTKeyBitmap {
+    #[bits(6)]
+    pub a: u32,
+    #[bits(6)]
+    pub b: u32,
+    #[bits(6)]
+    pub c: u32,
+    #[bits(6)]
+    pub d: u32,
+    #[bits(8)]
+    __: u32,
+}
+
+pub fn preprocess_english_language_memory(key: *const u8, key_len: &mut u16, destination: *mut u8) {
+    let mut src = key;
+    let mut dest = destination;
+    for i in 0..*key_len {
+        unsafe {
+            *dest = ENCODING_MAP_MEMORYOPT[*src as usize];
+            dest = dest.add(1);
+            src = src.add(1);
+        }
+    }
+}
+
+pub fn preprocess_english_language_performance(key: *const u8, key_len: &mut u16, destination: *mut u8) {
+    let mut src = key;
+    let mut dest = destination;
+    for i in 0..*key_len {
+        unsafe {
+            *dest = ENCODING_MAP_PERFOPT[*src as usize];
+            dest = dest.add(1);
+            src = src.add(1);
+        }
+    }
+}
+
+pub fn preprocess_uniform_keys_mt(key: *const u8, key_len: &mut u16, destination: *mut u8) {
+    unsafe {
+        let mut dest = destination;
+        *dest = *key;
+        dest = dest.add(1);
+        let pattern = key.add(1) as *mut TransformUniformMTKeyBitmap;
+        *dest = ((*pattern).a() << 2) as u8;
+        dest = dest.add(1);
+        *dest = ((*pattern).b() << 4) as u8;
+        dest = dest.add(1);
+        *dest = (*pattern).c() as u8;
+        dest = dest.add(1);
+        *dest = ((*pattern).d() << 2) as u8;
+        dest = dest.add(1);
+        copy_nonoverlapping(key.add(4), dest, *key_len as usize - 4);
+        *key_len += 1;
+    }
+}
+
+pub fn preprocess_uniform_keys_st(key: *const u8, key_len: &mut u16, destination: *mut u8) {
+    unsafe {
+        let mut dest = destination;
+        *dest = *key;
+        dest = dest.add(1);
+        let pattern = key.add(1) as *mut TransformUniformSTKeyBitmap;
+        *dest = ((*pattern).a() << 2) as u8;
+        dest = dest.add(1);
+        *dest = ((*pattern).b() << 2) as u8;
+        dest = dest.add(1);
+        *dest = ((*pattern).c() << 2) as u8;
+        dest = dest.add(1);
+        *dest = ((*pattern).d() << 2) as u8;
+        dest = dest.add(1);
+        copy_nonoverlapping(key.add(4), dest, *key_len as usize - 4);
+        *key_len += 1;
     }
 }

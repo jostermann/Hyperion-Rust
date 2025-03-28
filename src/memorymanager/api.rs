@@ -1,18 +1,24 @@
 use std::ffi::c_void;
 
+pub use crate::memorymanager::components::arena::NUM_ARENAS;
 use crate::memorymanager::components::arena::{get_arena_mut, ArenaInner};
 pub use crate::memorymanager::components::arena::{get_next_arena, Arena};
 use crate::memorymanager::components::bin::Bin;
 use crate::memorymanager::components::superbin::SUPERBIN_ARRAY_MAXSIZE;
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, free_mmap, AllocatedBy};
 use crate::memorymanager::internals::compression::{decompress_extended, CompressionState};
+pub use crate::memorymanager::internals::compression::{
+    get_compressed_total, get_reset_compressed_bytes, get_reset_decompressed_bytes, get_reset_original_compressed, get_reset_original_decompressed,
+    get_reset_trimmed_chunks,
+};
+pub use crate::memorymanager::internals::core::memory_manager_statistics;
 use crate::memorymanager::internals::core::{free_from_pointer, get_chunk, get_new_pointer, reallocate_from_pointer, roundup};
 pub use crate::memorymanager::internals::core::{CONTAINER_MAX_SPLITS, CONTAINER_SPLIT_BITS};
-use crate::memorymanager::internals::simd_common::{apply_simd, clear_simd};
+use crate::memorymanager::internals::simd_common::clear_simd;
+pub use crate::memorymanager::internals::system_information::{get_memory_stats, MemorySettings};
 pub use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 pub use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 pub use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
-pub use crate::memorymanager::components::arena::NUM_ARENAS;
 
 pub const ARENA_COMPRESSION: usize = 16646144;
 
@@ -124,7 +130,7 @@ pub fn get_all_chained_pointer(segment_chain: &mut SegmentChain, arena: *mut Are
             let increment: usize = 256 / (1usize << CONTAINER_SPLIT_BITS);
             for i in (0..256).step_by(increment) {
                 if (*chain_head).data.is_notnull() {
-                    if (*chain_head).header.compression_state() > CompressionState::DEFLATE {
+                    if (*chain_head).header.compression_state() > CompressionState::Deflate {
                         decompress_extended(chain_head);
                     }
                     segment_chain.chars[elements] = i as u8;
@@ -164,7 +170,7 @@ pub fn get_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPoi
                 let target_size = roundup(size);
                 (*char_entry).header.set_alloced_by(AllocatedBy::Heap);
                 (*char_entry).data.store(allocate_heap(target_size));
-                (*char_entry).set_flags(size as i32, (target_size - size) as i16, 0, 0, CompressionState::NONE, offset as u8);
+                (*char_entry).set_flags(size as i32, (target_size - size) as i16, 0, 0, CompressionState::None, offset as u8);
             } else {
                 // Scan for a chained memory region that is not null
                 while offset >= 0 && (*char_entry).data.is_null() {
@@ -175,7 +181,7 @@ pub fn get_chained_pointer(arena: &mut Arena, hyperion_pointer: &mut HyperionPoi
         }
         (*char_entry).chance2nd_read = 0;
 
-        if (*char_entry).header.compression_state() > CompressionState::DEFLATE {
+        if (*char_entry).header.compression_state() > CompressionState::Deflate {
             decompress_extended(char_entry);
         }
         (*char_entry).data.get()
@@ -223,10 +229,6 @@ pub fn free(arena: *mut Arena, hyperion_pointer: *mut HyperionPointer) {
 
 #[cfg(test)]
 mod test_global {
-    use std::thread;
-
-    use crate::memorymanager::api::*;
-
     #[test]
     fn test() {
         /*initialize();

@@ -10,7 +10,7 @@ use crate::hyperion::internals::atomic_pointer::AtomicEmbContainer;
 use crate::hyperion::internals::errors::ERR_NO_CAST_MUT_REF;
 use crate::memorymanager::api::{Arena, HyperionPointer};
 use bitfield_struct::bitfield;
-use std::ptr::null_mut;
+use std::ptr::{null_mut, NonNull};
 
 pub const DELTA_MAX_VALUE: u8 = 7;
 pub const TOP_NODE_JUMP_TABLE_HWM: usize = 16;
@@ -163,7 +163,7 @@ pub struct ContainerInjectionContext {
 #[repr(C)]
 pub struct EmbeddedTraversalContext {
     pub root_container: *mut Container,
-    pub next_embedded_container: Option<*mut EmbeddedContainer>,
+    pub next_embedded_container: Option<NonNull<EmbeddedContainer>>,
     pub embedded_stack: Option<[Option<AtomicEmbContainer>; CONTAINER_MAX_EMBEDDED_DEPTH]>,
     pub next_embedded_container_offset: i32,
     pub embedded_container_depth: usize,

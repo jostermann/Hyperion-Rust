@@ -69,6 +69,12 @@ impl AtomicMemoryPointer {
         self.ptr.load(Ordering::Relaxed)
     }
 
+    /// Returns a raw pointer to the stored memory region.
+    pub fn read(&self) -> *const c_void {
+        // No synchronization requires when loading
+        self.ptr.load(Ordering::Relaxed)
+    }
+
     /// Returns a raw pointer to the stored `ExtendedHyperionPointer`.
     ///
     /// Extended bins store an ExtendedPointer as chunk data.

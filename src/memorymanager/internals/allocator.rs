@@ -14,14 +14,11 @@ use std::panic::Location;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use libc::{
-    calloc, free, malloc, memcpy, memset, mmap, munmap, sysconf, MAP_ANON, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE,
-    _SC_PAGESIZE,
-};
 use crate::hyperion::api::log_to_file;
 use crate::memorymanager::api::teardown;
 use crate::memorymanager::internals::allocator::AllocatedBy::{Heap, Mmap};
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
+use libc::{calloc, free, malloc, memcpy, memset, mmap, munmap, sysconf, MAP_ANON, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE, _SC_PAGESIZE};
 // pub(crate) const REALLOC_UPPER_LIMIT: u32 = 16777216;
 
 /// Enum defining all allocation types possible in Hyperion's memory manager.
@@ -86,6 +83,7 @@ pub fn abort(error: &mut AllocatorError) {
 /// # Safety
 /// This function operates directly on the virtual memory. Rust cannot check if
 /// the allocation parameters are valid.
+#[allow(unused)]
 pub(crate) unsafe fn auto_allocate_memory(ptr: &mut AtomicMemoryPointer, size: usize) -> AllocatedBy {
     let page_size: usize = unsafe { sysconf(_SC_PAGESIZE) as usize };
     if size % page_size != 0 {
@@ -117,7 +115,7 @@ pub(crate) unsafe fn auto_allocate_memory(ptr: &mut AtomicMemoryPointer, size: u
 pub(crate) unsafe fn allocate_mmap(size: usize) -> *mut c_void {
     let p_new: *mut c_void = mmap(null_mut(), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if p_new == MAP_FAILED {
-        log_to_file(&format!("ERROR: ALLOCATION ON MMAP FAILED"));
+        log_to_file("ERROR: ALLOCATION ON MMAP FAILED");
         abort(&mut AllocatorError {
             message: "Allocation of memory failed",
             location: Location::caller(),
@@ -133,7 +131,7 @@ pub(crate) unsafe fn allocate_mmap(size: usize) -> *mut c_void {
 pub(crate) unsafe fn allocate_heap(size: usize) -> *mut c_void {
     let p_new: *mut c_void = calloc(size, 1);
     if p_new.is_null() {
-        log_to_file(&format!("ERROR: ALLOCATION ON HEAP FAILED"));
+        log_to_file("ERROR: ALLOCATION ON HEAP FAILED");
     }
     p_new
 }

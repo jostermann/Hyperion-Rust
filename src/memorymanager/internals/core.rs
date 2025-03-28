@@ -1,16 +1,21 @@
-use crate::memorymanager::components::arena::ArenaInner;
-use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED};
-use crate::memorymanager::components::metabin::Metabin;
-use crate::memorymanager::components::superbin::{get_superbin_id, Superbin};
+use crate::memorymanager::api::NUM_ARENAS;
+use crate::memorymanager::components::arena::{get_arena_mut, ArenaInner};
+use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED, BIN_FREELIST_ELEMENTS};
+use crate::memorymanager::components::metabin::{Metabin, METABIN_ELEMENTS};
+use crate::memorymanager::components::superbin::{get_superbin_id, Superbin, SUPERBIN_ARRAY_MAXSIZE};
 use crate::memorymanager::internals::allocator::{allocate_heap, auto_free_memory, auto_reallocate_memory, AllocatedBy};
 use crate::memorymanager::internals::compression::{compress_arena, decompress_extended, CompressionState};
 use crate::memorymanager::internals::simd_common::apply_index_search;
 use crate::memorymanager::internals::system_information::get_memory_stats;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
+use chrono::Local;
 use spin::RwLock;
+use std::env;
 use std::ffi::c_void;
-use std::ptr::{copy, copy_nonoverlapping, null_mut, read, write_bytes, write_volatile};
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Write};
+use std::ptr::{copy, copy_nonoverlapping, null_mut, write_bytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::hyperion::api::log_to_file;
 
@@ -48,12 +53,12 @@ pub fn get_chunk_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hyperion
         let bin: &mut Bin = arena.get_bin_ref(hyperion_pointer);
 
         return match bin.header.compression_state() {
-            CompressionState::NONE => get_offset(arena, hyperion_pointer),
-            CompressionState::DEFLATE => get_chunk_pointer_deflated(arena, hyperion_pointer),
-            CompressionState::LZ4 | CompressionState::ZSTD => {
+            CompressionState::None => get_offset(arena, hyperion_pointer),
+            CompressionState::Deflate => get_chunk_pointer_deflated(arena, hyperion_pointer),
+            CompressionState::Lz4 | CompressionState::Zstd => {
                 decompress_bin(bin);
 
-                if bin.header.compression_state() == CompressionState::NONE {
+                if bin.header.compression_state() == CompressionState::None {
                     return get_offset(arena, hyperion_pointer);
                 }
                 return get_chunk_pointer_deflated(arena, hyperion_pointer);
@@ -67,7 +72,6 @@ pub fn get_chunk_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hyperion
     ));
     let offset: usize = hyperion_pointer.chunk_id() as usize * current_superbin.header.size_of_bin() as usize;
     let chunk_addr = arena.get_bin_ref(hyperion_pointer).chunks.add_get(offset);
-    //log_to_file(&format!("Chunk address: {:p}", chunk_addr as *mut u8));
     chunk_addr
 }
 
@@ -153,7 +157,7 @@ pub fn get_chained_pointer(extended_hyperion_pointer: &mut ExtendedHyperionPoint
             offset -= 1;
         }
 
-        if (*iterator).header.compression_state() > CompressionState::DEFLATE {
+        if (*iterator).header.compression_state() > CompressionState::Deflate {
             decompress_extended(iterator);
         }
         iterator.as_mut().unwrap()
@@ -175,7 +179,6 @@ pub fn get_new_pointer(arena: &mut ArenaInner, size: usize, chained_counter: i32
 
     let metabin: &mut Metabin = arena.get_metabin_ref(&mut new_hyperion_pointer);
     log_to_file(&format!("New pointer reallocation: {:?}", new_hyperion_pointer));
-    
 
     if new_hyperion_pointer.is_extended_pointer() {
         let extended_pointer: &mut ExtendedHyperionPointer =
@@ -183,7 +186,7 @@ pub fn get_new_pointer(arena: &mut ArenaInner, size: usize, chained_counter: i32
         let new_size = roundup(size);
         extended_pointer.header.set_alloced_by(AllocatedBy::Heap);
         extended_pointer.data.store(unsafe { allocate_heap(new_size) });
-        extended_pointer.set_flags(size as i32, (new_size - size) as i16, 0, 0, CompressionState::NONE, chained_counter as u8);
+        extended_pointer.set_flags(size as i32, (new_size - size) as i16, 0, 0, CompressionState::None, chained_counter as u8);
     }
     new_hyperion_pointer
 }
@@ -271,9 +274,9 @@ fn reallocate_hyperion_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut Hy
     let old_data: *mut c_void = get_chunk(arena, hyperion_pointer, 1, 0);
     let new_data: *mut c_void = get_chunk(arena, &mut new_pointer, 1, 0);
     let allocation_size: u16 = arena.get_superbin_ref(hyperion_pointer).get_data_size();
-    
+
     unsafe {
-        log_to_file(&format!("R1"));
+        log_to_file("R1");
         log_to_file(&format!("old_data: {}, new_data: {}, allocation_size: {}, copy size: {}", old_data.is_null() as usize, old_data.is_null() as usize, allocation_size, allocation_size.min(size as u16) as usize));
         // Copy all old data into the newly allocated chunk
         copy_nonoverlapping(old_data as *const u8, new_data as *mut u8, allocation_size.min(size as u16) as usize);
@@ -377,7 +380,7 @@ fn reallocate_extended(
 
 /// Frees the memory region pointed to by the [`HyperionPointer`].
 pub fn free_from_pointer(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer) {
-    if arena.get_bin_ref(hyperion_pointer).header.compression_state() != CompressionState::DEFLATE {
+    if arena.get_bin_ref(hyperion_pointer).header.compression_state() != CompressionState::Deflate {
         free_chunks_normal(arena, hyperion_pointer);
     } else {
         free_chunks_deflated(arena, hyperion_pointer);
@@ -459,7 +462,7 @@ fn free_chunks_normal(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPoi
 pub fn probe_compression_with(arena: &mut ArenaInner) {
     if DYN_PROBE_INTERVAL.fetch_sub(1, Ordering::SeqCst) == 0 {
         compress_arena(arena);
-        let factor: f64 = (1.0 - get_memory_stats(false).sys_rate).powf(2.0);
+        let factor: f64 = (1.0 - get_memory_stats(false).read().sys_rate).powf(2.0);
         DYN_PROBE_INTERVAL.store((PROBE_COMPRESSION_INTERVAL_INACTIVE as f64 * factor) as usize, Ordering::SeqCst)
     }
 }
@@ -479,6 +482,75 @@ pub fn probe_compression_without(arena: &mut ArenaInner) {
                 DYN_INCREMENT_SIZE.store(INCREMENT_SIZE_EXT_TIGHT, Ordering::SeqCst);
             }
             DYN_PROBE_INTERVAL.store(PROBE_COMPRESSION_INTERVAL_INACTIVE, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn memory_manager_statistics() {
+    let now = Local::now();
+    let time_str = now.format("-%y%m%dT%H%M%S-").to_string();
+    let cwd = env::current_dir().expect("Could not get current working directory");
+    let filename = format!("Memory Manager statistics {time_str}.txt");
+    let path = cwd.join(filename);
+
+    let mut writer = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => BufWriter::new(file),
+        Err(e) => {
+            eprintln!("Could not create a file for the memory manager statistics {}", e);
+            return;
+        },
+    };
+
+    let _ = writeln!(writer, "Memory Manager statistics");
+
+    for i in 0..NUM_ARENAS {
+        let _ = writeln!(writer, "\n####################\nArena: {}\n####################\n", i);
+
+        let arena = unsafe { (*get_arena_mut(i as u32)).spinlock.lock() };
+
+        for superbin_id in 0..SUPERBIN_ARRAY_MAXSIZE {
+            let _ = writeln!(writer, " - Superbin: {}", superbin_id);
+            let superbin = &arena.superbins[superbin_id];
+
+            for metabin_id in 0..superbin.header.metabins_initialized() {
+                let _ = writeln!(writer, "   - Metabin: {}", metabin_id);
+                let mut ext_chunks_used: u64 = 0;
+                let mut ext_chunk_overalloc: u64 = 0;
+                let mut chunks_used: u64 = 0;
+                let mut bins_allocated: u64 = 0;
+
+                let metabin = superbin.metabins.get(metabin_id as usize).unwrap();
+
+                for bin_id in 0..METABIN_ELEMENTS {
+                    let bin = &metabin.bins[bin_id];
+
+                    if bin.chunks.is_notnull() {
+                        bins_allocated += 1;
+
+                        for bin_mask in 0..BIN_FREELIST_ELEMENTS {
+                            chunks_used += 32 - bin.chunk_usage_mask[bin_mask].count_ones() as u64;
+                        }
+
+                        if superbin_id == 0 {
+                            let mut extended_pointer = bin.chunks.read() as *const ExtendedHyperionPointer;
+
+                            for _ in 0..BIN_ELEMENTS {
+                                ext_chunks_used += unsafe { (*extended_pointer).requested_size } as u64;
+                                ext_chunk_overalloc += unsafe { (*extended_pointer).overallocated } as u64;
+                                extended_pointer = unsafe { extended_pointer.add(1) };
+                            }
+                        }
+                    }
+                }
+                let unused_chunks = (bins_allocated * BIN_ELEMENTS as u64) - chunks_used;
+                let _ = writeln!(writer, "        - bins allocated: {}", bins_allocated);
+                let _ = writeln!(writer, "        - chunks used: {}", chunks_used);
+                let _ = writeln!(writer, "        - unused chunks: {}", unused_chunks);
+                let _ = writeln!(writer, "        - extended used in KiB: {}", ext_chunks_used / 1024);
+                let _ = writeln!(writer, "        - extended chunks overallocation in KiB: {}", ext_chunk_overalloc / 1024);
+                let _ = writeln!(writer, "        - overallocation in KiB: {}", unused_chunks * superbin.header.size_of_bin() as u64 / 1024);
+                let _ = writer.flush();
+            }
         }
     }
 }

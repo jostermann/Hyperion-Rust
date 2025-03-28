@@ -57,9 +57,9 @@ fn read_stats() {
 }
 
 /// Returns the current memory settings.
-pub fn get_memory_stats(force_update: bool) -> RwLockReadGuard<'static, MemorySettings> {
+pub fn get_memory_stats(force_update: bool) -> &'static RwLock<MemorySettings> {
     if force_update {
         read_stats();
     }
-    MEMORY_SETTINGS.read()
+    &MEMORY_SETTINGS
 }

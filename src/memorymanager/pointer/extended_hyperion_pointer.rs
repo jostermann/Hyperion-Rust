@@ -110,7 +110,7 @@ mod extended_hyperion_pointer_tests {
                 .with_alloced_by(Mmap)
                 .with_chained_pointer_count(0)
                 .with_chance2nd_realloc(0)
-                .with_compression_state(CompressionState::NONE),
+                .with_compression_state(CompressionState::None),
             chance2nd_read: 0,
             data: AtomicMemoryPointer::new(),
             requested_size: 0,
@@ -125,7 +125,7 @@ mod extended_hyperion_pointer_tests {
         assert_eq!(ehp.header.chance2nd_realloc(), 0, "Expected chance2nd_realloc to be 0, but got {}.", ehp.header.chance2nd_realloc());
         assert_eq!(
             ehp.header.compression_state(),
-            CompressionState::NONE,
+            CompressionState::None,
             "Expected compression_state to be NONE, but got {:?}.",
             ehp.header.compression_state()
         );
@@ -136,7 +136,7 @@ mod extended_hyperion_pointer_tests {
         ehp.header.set_alloced_by(Heap);
         ehp.header.set_chained_pointer_count(12);
         ehp.header.set_chance2nd_realloc(1);
-        ehp.header.set_compression_state(CompressionState::LZ4);
+        ehp.header.set_compression_state(CompressionState::Lz4);
 
         assert_eq!(ehp.requested_size, 50, "Expected requested_size to be 50 after modification, but got {}.", ehp.requested_size);
         assert_eq!(ehp.overallocated, 100, "Expected overallocated to be 100 after modification, but got {}.", ehp.overallocated);
@@ -156,7 +156,7 @@ mod extended_hyperion_pointer_tests {
         );
         assert_eq!(
             ehp.header.compression_state(),
-            CompressionState::LZ4,
+            CompressionState::Lz4,
             "Expected compression_state to be LZ4 after modification, but got {:?}.",
             ehp.header.compression_state()
         );
@@ -169,7 +169,7 @@ mod extended_hyperion_pointer_tests {
                 .with_alloced_by(Mmap)
                 .with_chained_pointer_count(0)
                 .with_chance2nd_realloc(0)
-                .with_compression_state(CompressionState::NONE),
+                .with_compression_state(CompressionState::None),
             chance2nd_read: 0,
             data: AtomicMemoryPointer::new(),
             requested_size: 50,
@@ -185,7 +185,7 @@ mod extended_hyperion_pointer_tests {
                 .with_alloced_by(Mmap)
                 .with_chained_pointer_count(0)
                 .with_chance2nd_realloc(0)
-                .with_compression_state(CompressionState::NONE),
+                .with_compression_state(CompressionState::None),
             chance2nd_read: 0,
             data: AtomicMemoryPointer::new(),
             requested_size: 50,

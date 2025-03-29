@@ -20,19 +20,28 @@ compression = []
 migration = []
 triestats = []
 
+[build]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "target-feature=+sse4.1,+avx2"
+]
 
 [profile.dev]
-#debug = true
+debug = true
 opt-level = 3
 
 [profile.release]
-#debug = true
+debug = false
 panic = "abort"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
 
 [profile.test]
-#debug = true
+debug = true
 opt-level = 3
 
-#[lib]
-#name = "hyperion"
-#crate-type = ["cdylib"]
+[lib]
+name = "hyperion"
+crate-type = ["cdylib"]

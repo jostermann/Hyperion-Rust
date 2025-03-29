@@ -141,7 +141,7 @@ impl Container {
     pub fn increment_container_size(&mut self, required_minimum: u32) -> u32 {
         let container_increment = GLOBAL_CONFIG.read().header.container_size_increment();
         self.set_size(self.size() + required_minimum.div_ceil(container_increment) * container_increment);
-        log_to_file(&format!("increment_container_size: {} to resulting size {}", required_minimum, self.size()));
+        // log_to_file(&format!("increment_container_size: {} to resulting size {}", required_minimum, self.size()));
         self.size()
     }
 
@@ -151,7 +151,7 @@ impl Container {
     /// - The found key if exists, otherwise `0`.
     /// - The corresponding offset of the found key via the mutable reference to offset.
     pub fn get_key_and_offset_with_jump_table(&mut self, key_char: u8, offset: &mut usize) -> u8 {
-        log_to_file("get_key_and_offset_with_jump_table");
+        // log_to_file("get_key_and_offset_with_jump_table");
         let jt_entry: *mut ContainerJumpTableEntry = self.get_jump_table_pointer();
 
         // Perform a binary search like scan
@@ -175,13 +175,13 @@ impl Container {
                 None
             }
         }) {
-            log_to_file(&format!("get_key_and_offset_with_jump_table; found key: {}, set offset to {}", found_key, found_offset));
+            // log_to_file(&format!("get_key_and_offset_with_jump_table; found key: {}, set offset to {}", found_key, found_offset));
             *offset = found_offset;
             return found_key;
         }
 
         *offset = self.get_container_head_size() + self.get_jump_table_size();
-        log_to_file(&format!("get_key_and_offset_with_jump_table; no found key: 0, set offset to {}", self.get_container_head_size() + self.get_jump_table_size()));
+        // log_to_file(&format!("get_key_and_offset_with_jump_table; no found key: 0, set offset to {}", self.get_container_head_size() + self.get_jump_table_size()));
         0
     }
 }
@@ -196,7 +196,7 @@ impl Container {
 /// - The caller must ensure that `start_shift + shift_len + container_tail` is a valid memory region.
 /// - Misuse can lead to undefined behavior.
 pub unsafe fn shift_container(start_shift: *mut u8, shift_len: usize, container_tail: usize) {
-    log_to_file(&format!("shift container: shift by: {}, amount: {}", shift_len, container_tail));
+    // log_to_file(&format!("shift container: shift by: {}, amount: {}", shift_len, container_tail));
     copy(start_shift, start_shift.add(shift_len), container_tail);
     write_bytes(start_shift, 0, shift_len);
 }
@@ -215,7 +215,7 @@ pub unsafe fn wrap_shift_container(container: *mut Container, start_shift: *mut 
     let shift_offset: i64 = start_shift.offset_from(container_start) as i64;
     let remaining_length: i64 = ((*container).size() as i64).saturating_sub(shift_offset + (*container).free_bytes() as i64);
 
-    log_to_file(&format!("wrap shift container rem len: {}", remaining_length));
+    // log_to_file(&format!("wrap shift container rem len: {}", remaining_length));
 
     if remaining_length > 0 {
         shift_container(start_shift, shift_len, remaining_length as usize)
@@ -256,20 +256,20 @@ pub fn get_container_link_size() -> usize {
 fn update_jump_table(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
     if let Some(stored_node) = ocx.top_jump_table_context.top_node.as_mut() {
         if as_top_node(*stored_node).jump_table_present() {
-            log_to_file("update jump table");
+            // log_to_file("update jump table");
             let char_to_check: u8 = if ocx.top_jump_table_context.root_container_sub_char_set {
                 ocx.top_jump_table_context.root_container_sub_char
             } else {
                 ctx.second_char
             };
-            log_to_file(&format!("update_jump_table on {}", char_to_check));
+            // log_to_file(&format!("update_jump_table on {}", char_to_check));
 
             let jump_table: *mut i16 = unsafe { (*stored_node as *const u8).add(get_offset_jump_table(*stored_node)) as *mut i16 };
 
             (char_to_check as usize >> TOP_NODE_JUMP_TABLE_SHIFT..TOP_NODE_JUMP_TABLE_ENTRIES).fold(-1, |previous_value: i32, i: usize| unsafe {
                 let current_pointer: *mut i16 = jump_table.add(i);
                 let current_value: i32 = read_unaligned(current_pointer) as i32;
-                log_to_file(&format!("previous val: {}, current val: {}", previous_value, current_value));
+                // log_to_file(&format!("previous val: {}, current val: {}", previous_value, current_value));
                 assert!(previous_value < current_value);
                 write_unaligned(current_pointer, current_value as i16 + usage_delta);
                 current_value
@@ -283,7 +283,7 @@ fn update_jump_table(usage_delta: i16, ocx: &mut OperationContext, ctx: &mut Con
                 let target: *mut i16 = (*predecessor as *mut u8).add(get_offset_jump_successor(*predecessor)) as *mut i16;
                 let current_value: i16 = read_unaligned(target);
                 write_unaligned(target, current_value.wrapping_add(usage_delta));
-                log_to_file(&format!("update_jump_table predecessor to {}", read_unaligned(target)));
+                // log_to_file(&format!("update_jump_table predecessor to {}", read_unaligned(target)));
             }
         }
     }
@@ -294,24 +294,24 @@ fn update_embedded_container(usage_delta: i16, ocx: &mut OperationContext) {
         return;
     }
     let size = ocx.get_root_container().size();
-    log_to_file(&format!("Update embedded container: current stack size: {}", ocx.embedded_traversal_context.embedded_container_depth));
+    // log_to_file(&format!("Update embedded container: current stack size: {}", ocx.embedded_traversal_context.embedded_container_depth));
     if let Some(emb_stack) = ocx.embedded_traversal_context.embedded_stack.as_mut() {
         for container in emb_stack.iter_mut().take(ocx.embedded_traversal_context.embedded_container_depth).rev() {
             if let Some(current_em_container) = container.as_mut().map(|c: &mut AtomicEmbContainer| c.borrow_mut()) {
                 let current_size: i16 = current_em_container.size() as i16;
                 current_em_container.set_size((current_size + usage_delta) as u8);
-                log_to_file(&format!("update_embedded_container: current size: {} + usage_delta: {} = {}", current_size, usage_delta, current_em_container.size()));
+                // log_to_file(&format!("update_embedded_container: current size: {} + usage_delta: {} = {}", current_size, usage_delta, current_em_container.size()));
             }
         }
         if let Some(emb_container) = emb_stack[0].as_mut() {
-            log_to_file(&format!("First embedded size: {} < root_size: {}", emb_container.borrow_mut().size(), size));
+            // log_to_file(&format!("First embedded size: {} < root_size: {}", emb_container.borrow_mut().size(), size));
             assert!((emb_container.borrow_mut().size() as u32) < size);
         }
     }
 }
 
 fn update_container_jump_table(ocx: &mut OperationContext, usage_delta: i16) {
-    log_to_file(&format!("update_top_node_jump_table_entries: usage_delta: {}", usage_delta));
+    // log_to_file(&format!("update_top_node_jump_table_entries: usage_delta: {}", usage_delta));
     if ocx.get_root_container().jump_table() == 0 {
         return;
     }
@@ -335,7 +335,7 @@ fn update_container_jump_table(ocx: &mut OperationContext, usage_delta: i16) {
 /// An update of the container's space will also update all top node jump tables and container jump tables stored in this container. Moreover,
 /// all embedded containers stored in this container will be updated in their size by the given `delta`.
 pub fn update_space(delta: i16, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext) {
-    log_to_file(&format!("update space usage: {}", delta));
+    // log_to_file(&format!("update space usage: {}", delta));
     assert!(ocx.get_root_container().free_bytes() as i16 >= delta);
     let free_bytes: i16 = ocx.get_root_container().free_bytes() as i16;
     ocx.get_root_container().set_free_size_left((free_bytes - delta) as u32);

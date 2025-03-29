@@ -151,7 +151,7 @@ impl Bin {
         self.set_flags(CompressionState::None, Mmap as u8, 0, 0);
         self.chunks = AtomicMemoryPointer::new();
         self.chunk_usage_mask.fill(u32::MAX);
-        log_to_file("Bin is not initialized");
+        // log_to_file("Bin is not initialized");
 
         if superbin.has_cached_bin() {
             self.chunks.clone_from(&superbin.bin_cache);

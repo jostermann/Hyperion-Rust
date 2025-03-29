@@ -157,7 +157,7 @@ fn get_stored_value(node: *mut Node) -> u8 {
 fn calculate_delta_difference(node: *mut Node, successor: *mut Node) -> u8 {
     let succ_delta: u8 = get_stored_value(successor);
     let this_delta: u8 = get_stored_value(node);
-    log_to_file(&format!("set_nodes_key2: succ_delta: {}, this_delta: {}, diff: {}", succ_delta, this_delta, succ_delta.wrapping_sub(this_delta)));
+    // log_to_file(&format!("set_nodes_key2: succ_delta: {}, this_delta: {}, diff: {}", succ_delta, this_delta, succ_delta.wrapping_sub(this_delta)));
     succ_delta.wrapping_sub(this_delta)
 }
 
@@ -186,7 +186,7 @@ pub fn set_nodes_key(
         let diff: u8 = calculate_delta_difference(node, successor);
         update_successor_key(successor, diff, absolute_key.wrapping_add(diff), skipped_bytes, ocx, ctx);
     }
-    log_to_file(&format!("set_nodes_key2: {}", unsafe { (*node).key }));
+    // log_to_file(&format!("set_nodes_key2: {}", unsafe { (*node).key }));
 
     OK
 }
@@ -283,7 +283,7 @@ fn handle_jump_context(node: *mut Node, diff: u8, absolute_key: u8, ocx: &mut Op
 pub fn update_successor_key(
     node: *mut Node, diff: u8, absolute_key: u8, skipped: u32, ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext,
 ) -> ReturnCode {
-    log_to_file(&format!("update successor key: {}, {}", absolute_key, diff));
+    // log_to_file(&format!("update successor key: {}, {}", absolute_key, diff));
     let ret: bool = update_stored_value_from_diff(node, diff);
     if ret {
         // 1.) The difference could not be delta encoded and was stored as a raw key in this node.

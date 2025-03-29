@@ -97,8 +97,8 @@ impl Metabin {
         hyperion_pointer.set_bin_id(candidate);
         let bin: &mut Bin = &mut self.bins[hyperion_pointer.bin_id() as usize];
 
-        log_to_file(&format!("Allocate bin from: {:?}", hyperion_pointer));
-        log_to_file(&format!("Bin {} initialization status: is empty? {}", candidate, bin.is_empty() as usize));
+        // log_to_file(&format!("Allocate bin from: {:?}", hyperion_pointer));
+        // log_to_file(&format!("Bin {} initialization status: is empty? {}", candidate, bin.is_empty() as usize));
         //log_to_file(&format!("Bin {} pointer address: {:p}", candidate, bin.chunks.get() as *mut u8));
 
         if bin.is_empty() {

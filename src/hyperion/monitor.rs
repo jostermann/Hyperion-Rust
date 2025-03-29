@@ -48,7 +48,7 @@ pub fn initialize_logfile(prefix: &str) -> PathBuf {
     let now = Local::now();
     let time_str = now.format("-%y%m%dT%H%M%S-").to_string();
     let cwd = env::current_dir().expect("Could not get current working directory");
-    let filename = format!("{prefix}-{VERSION}{time_str}.txt");
+    let filename = format!("{prefix}-{VERSION}{time_str}.csv");
     cwd.join(filename)
 }
 
@@ -67,7 +67,7 @@ pub fn monitor_deamon(root_container_array: Arc<Mutex<RootContainerArray>>, logf
 
     writeln!(
         writer,
-        "Time;Treesize-[Bil];Put/s[k];Get/s[k];Upd/s[k];RQ;VMsize[GiB];Bytes/Key];Trimmed;Comp[kb];Decomp[kb];AbsCompr[mb];OrigComp[kb];OrigDecp[kb];memrate;RQleaves"
+        "Time,Treesize[Bil],Put/s[k],Get/s[k],Upd/s[k],RQ,VMsize[GiB],Bytes/Key,Trimmed,Comp[kb],Decomp[kb],AbsCompr[mb],OrigComp[kb],OrigDecp[kb],memrate,RQleaves"
     ).unwrap();
 
     let mut total_puts = 0u64;
@@ -88,14 +88,14 @@ pub fn monitor_deamon(root_container_array: Arc<Mutex<RootContainerArray>>, logf
         current_rangequeries = 0;
         rq_leaves = 0;
 
-        thread::sleep(Duration::from_millis(50));
-
-        let current_time = SystemTime::now();
-
-        if current_time.duration_since(last_time).unwrap().as_secs() == 0 {
-            continue;
+        loop {
+            let current_time = SystemTime::now();
+            if current_time.duration_since(last_time).unwrap().as_secs() != 0 {
+                last_time = current_time;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
         }
-        last_time = current_time;
 
         if FLUSH_COUNT.load(Relaxed) <= 0 || memory_settings.read().vm_size > 1022361600 {
             writer.flush().unwrap();
@@ -133,19 +133,19 @@ pub fn monitor_deamon(root_container_array: Arc<Mutex<RootContainerArray>>, logf
 
         let _ = writeln!(
             writer,
-            "\n{};{:9.3};{:9.3};{:9.3};{:9.3};{:6};{:9.3};{:7.3};{:7};{:7};{:7};{:7};{:7};{:5};{:2.3};{:7}",
+            "{},{:.7},{:.3},{:.3},{:.3},{},{:.3},{:.3},{},{},{},{},{},{},{:.3},{}",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-            total_puts as f64 / 1_000_000_000.0,
-            puts_per_second / 1_000.0,
-            gets_per_second / 1_000.0,
-            updates_per_second / 1_000.0,
+            total_puts as f64 / 1000000000.0,
+            puts_per_second / 1000.0,
+            gets_per_second / 1000.0,
+            updates_per_second / 1000.0,
             current_rangequeries,
-            memory_settings.read().vm_size as f64 / 1_048_576.0,
+            memory_settings.read().vm_size as f64 / 1048576.0,
             bytes_per_key,
             get_reset_trimmed_chunks(),
             get_reset_compressed_bytes() / 1024,
             get_reset_decompressed_bytes() / 1024,
-            get_compressed_total() / 1_048_576,
+            get_compressed_total() / 1048576,
             get_reset_original_compressed() / 1024,
             get_reset_original_decompressed() / 1024,
             memory_settings.read().sys_rate,

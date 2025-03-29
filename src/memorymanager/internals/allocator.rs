@@ -115,7 +115,7 @@ pub(crate) unsafe fn auto_allocate_memory(ptr: &mut AtomicMemoryPointer, size: u
 pub(crate) unsafe fn allocate_mmap(size: usize) -> *mut c_void {
     let p_new: *mut c_void = mmap(null_mut(), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if p_new == MAP_FAILED {
-        log_to_file("ERROR: ALLOCATION ON MMAP FAILED");
+        // log_to_file("ERROR: ALLOCATION ON MMAP FAILED");
         abort(&mut AllocatorError {
             message: "Allocation of memory failed",
             location: Location::caller(),
@@ -131,7 +131,7 @@ pub(crate) unsafe fn allocate_mmap(size: usize) -> *mut c_void {
 pub(crate) unsafe fn allocate_heap(size: usize) -> *mut c_void {
     let p_new: *mut c_void = calloc(size, 1);
     if p_new.is_null() {
-        log_to_file("ERROR: ALLOCATION ON HEAP FAILED");
+        // log_to_file("ERROR: ALLOCATION ON HEAP FAILED");
     }
     p_new
 }

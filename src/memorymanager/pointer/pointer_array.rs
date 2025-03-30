@@ -25,7 +25,7 @@ pub(crate) struct PointerArray {
     /// `Box` pointers is beneficial because they provide integrated memory
     /// safety at compile time and the concurrent usage of at most one thread
     /// at a time is guaranteed.
-    pub array: Box<[Option<Box<Metabin>>]>
+    pub array: Box<[Option<Box<Metabin>>]>,
 }
 
 /// Amount of which the `PointerArray` will be enlarged if a reallocation is triggered.
@@ -40,7 +40,7 @@ impl PointerArray {
         vec.extend((0..initial_num_metabins).map(|_| Some(Box::new(Metabin::default()))));
         vec.extend((initial_num_metabins..POINTER_ARRAY_INCREMENT).map(|_| None));
         Self {
-            array: vec.into_boxed_slice()
+            array: vec.into_boxed_slice(),
         }
     }
 
@@ -64,7 +64,7 @@ impl PointerArray {
     /// Returns `None`, if no metabin is stored at that index or if the index
     /// is out of bounds.
     pub(crate) fn get(&self, index: usize) -> Option<&Metabin> {
-        self.array.get(index)?.as_ref().map(|b: &Box<Metabin>| b.as_ref())
+        self.array.get(index)?.as_ref().map(|b| b.as_ref())
     }
 
     /// Returns a mutable reference to the metabin stored at the given index.
@@ -127,7 +127,7 @@ impl PointerArray {
 
         // reserve additional POINTER_ARRAY_INCREMENT indices
         vec.reserve(POINTER_ARRAY_INCREMENT);
-        vec.extend((0..POINTER_ARRAY_INCREMENT).map(|_| None));
+        vec.extend((0..POINTER_ARRAY_INCREMENT).map(|_| Some(Box::new(Metabin::default()))));
         self.array = vec.into_boxed_slice();
         true
     }

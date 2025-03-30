@@ -1,24 +1,29 @@
-use bitfield_struct::bitfield;
-
+use crate::hyperion::api::log_to_file;
 use crate::memorymanager::components::superbin::Superbin;
-use crate::memorymanager::internals::allocator::{auto_allocate_memory, auto_free_memory, AllocatedBy};
+use crate::memorymanager::internals::allocator::AllocatedBy::Mmap;
+use crate::memorymanager::internals::allocator::{allocate_mmap, auto_free_memory, AllocatedBy};
 use crate::memorymanager::internals::compression::CompressionState;
 use crate::memorymanager::internals::simd_common::{all_bits_set_4096, apply_simd, count_set_bits, get_index_first_set_bit_4096_2};
 use crate::memorymanager::pointer::atomic_memory_pointer::AtomicMemoryPointer;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
+use bitfield_struct::bitfield;
+use std::ptr::null_mut;
 
 pub(crate) const BINOFFSET_BITS: u8 = 12;
 pub(crate) const BIN_ELEMENTS: usize = 1 << BINOFFSET_BITS; // 4096
 pub(crate) const FREELIST_ELEMENT_BITS: usize = 32;
+/// Maximum amount of chunks per bin.
 pub(crate) const BIN_FREELIST_ELEMENTS: usize = BIN_ELEMENTS / FREELIST_ELEMENT_BITS; // 128
 pub(crate) const BIN_ELEMENTS_DEFLATED: usize = 256;
 
-#[bitfield(u8, order = Msb)]
+/// Stores metadate for each bin.
+#[bitfield(u8)]
 pub(crate) struct BinHeader {
     #[bits(2)]
     pub(crate) compression_state: CompressionState,
 
+    /// Stores, if it was allocated by mmap or on the heap.
     #[bits(1)]
     pub(crate) allocated_by: AllocatedBy,
 
@@ -29,27 +34,31 @@ pub(crate) struct BinHeader {
     pub(crate) chance2nd_alloc: u8,
 
     #[bits(3)]
-    __: u8
+    __: u8,
 }
 
+/// Creates a single bin instance.
 #[derive(Clone)]
 #[repr(C, align(1))]
 pub(crate) struct Bin {
+    /// Stores metadate for this bin instance.
     pub(crate) header: BinHeader,
+    /// Stores a chunk pointer for this bin instance.
     pub(crate) chunks: AtomicMemoryPointer,
-    pub(crate) chunk_usage_mask: [u32; BIN_FREELIST_ELEMENTS] // 128 * 32 Bit -> jedes Bit ein Chunk
+    /// Stores a bitmask specifying the current chunk usage.
+    pub(crate) chunk_usage_mask: [u32; BIN_FREELIST_ELEMENTS], // 128 * 32 Bit -> jedes Bit ein Chunk
 }
 
 impl Default for Bin {
     fn default() -> Self {
         Bin {
             header: BinHeader::new()
-                .with_compression_state(CompressionState::NONE)
-                .with_allocated_by(AllocatedBy::Mmap)
+                .with_compression_state(CompressionState::None)
+                .with_allocated_by(Mmap)
                 .with_chance2nd_read(0)
                 .with_chance2nd_alloc(0),
             chunks: AtomicMemoryPointer::new(),
-            chunk_usage_mask: [0; BIN_FREELIST_ELEMENTS]
+            chunk_usage_mask: [0; BIN_FREELIST_ELEMENTS],
         }
     }
 }
@@ -63,16 +72,19 @@ impl Bin {
         self.header.set_chance2nd_alloc(chance2nd_alloc);
     }
 
+    /// Returns the current bin as a raw pointer to an [`ExtendedHyperionPointer`].
     pub(crate) unsafe fn get_extended_pointer(&mut self, hyperion_pointer: *mut HyperionPointer) -> *mut ExtendedHyperionPointer {
         let offset: usize = (*hyperion_pointer).chunk_id() as usize * size_of::<ExtendedHyperionPointer>();
         self.chunks.get().add(offset) as *mut ExtendedHyperionPointer
     }
 
+    /// Returns the current bin as a mutable reference to an [`ExtendedHyperionPointer`].
     pub(crate) fn get_extended_pointer_to_bin_ref(&mut self, hyperion_pointer: &mut HyperionPointer) -> &mut ExtendedHyperionPointer {
         let offset: usize = hyperion_pointer.chunk_id() as usize * size_of::<ExtendedHyperionPointer>();
         unsafe { (self.chunks.get().add(offset) as *mut ExtendedHyperionPointer).as_mut().unwrap() }
     }
 
+    /// Toggles the chunk usage of the given chunk id.
     pub(crate) fn toggle_chunk_usage(&mut self, chunk_id: usize) -> usize {
         let index: usize = chunk_id / FREELIST_ELEMENT_BITS;
         let bit: u32 = 1u32 << (chunk_id % FREELIST_ELEMENT_BITS);
@@ -96,7 +108,7 @@ impl Bin {
         if self.header.chance2nd_alloc() != 1 {
             return false;
         }
-        let free_chunks = apply_simd(&mut self.chunk_usage_mask, count_set_bits);
+        let free_chunks = apply_simd(&self.chunk_usage_mask, count_set_bits);
         free_chunks == BIN_ELEMENTS as i32
     }
 
@@ -119,18 +131,14 @@ impl Bin {
     /// Returns `false` if there are free chunks available.
     pub(crate) fn is_fully_occupied(&self) -> bool {
         !apply_simd(&self.chunk_usage_mask, all_bits_set_4096)
-        // match apply_simd(&self.chunk_usage_mask, all_bits_set_4096) {
-        // true => false,
-        // false => true,
-        // }
     }
 
     /// Checks if any chunk is free in the bin.
     ///
     /// Returns `Some(index)` containing the id of the found free chunk.
     /// Returns `None`, if all chunks are occupied.
-    pub(crate) fn new_chunk_allocation_space_available(&self) -> Option<u8> {
-        apply_simd(&self.chunk_usage_mask, get_index_first_set_bit_4096_2).map(|index: i32| index as u8)
+    pub(crate) fn new_chunk_allocation_space_available(&self) -> Option<u16> {
+        apply_simd(&self.chunk_usage_mask, get_index_first_set_bit_4096_2).map(|index: i32| index as u16)
     }
 
     /// Initializes the Bin-Instance with default values. Copies optional cached bin data from the given `Superbin`.
@@ -140,16 +148,18 @@ impl Bin {
     /// cache in the superbin is reset. If there is no cached data, a new memory area is allocated
     /// for the chunks and the allocation type in the header is updated.
     pub(crate) fn initialize(&mut self, superbin: &mut Superbin) {
-        self.set_flags(CompressionState::NONE, AllocatedBy::Mmap as u8, 0, 0);
+        self.set_flags(CompressionState::None, Mmap as u8, 0, 0);
         self.chunks = AtomicMemoryPointer::new();
-        self.chunk_usage_mask.fill(0xFF);
+        self.chunk_usage_mask.fill(u32::MAX);
+        // log_to_file("Bin is not initialized");
 
         if superbin.has_cached_bin() {
             self.chunks.clone_from(&superbin.bin_cache);
             superbin.clear_cache();
         } else {
-            let allocated_by: AllocatedBy = unsafe { auto_allocate_memory(&mut self.chunks, superbin.header.size_of_bin() as usize * BIN_ELEMENTS) };
-            self.header.set_allocated_by(allocated_by);
+            self.chunks = AtomicMemoryPointer::new();
+            self.chunks.store(unsafe { allocate_mmap(superbin.header.size_of_bin() as usize * BIN_ELEMENTS) });
+            self.header.set_allocated_by(Mmap);
         }
     }
 
@@ -161,8 +171,8 @@ impl Bin {
     pub(crate) fn allocate_chunk_unchained(&mut self, hyperion_pointer: &mut HyperionPointer) -> bool {
         self.new_chunk_allocation_space_available()
             .map(|candidate| {
-                let index: usize = self.toggle_chunk_usage(candidate as usize);
-                hyperion_pointer.set_chunk_id(index as u16);
+                self.toggle_chunk_usage(candidate as usize);
+                hyperion_pointer.set_chunk_id(candidate);
                 self.header.set_chance2nd_alloc(0);
                 true
             })
@@ -177,9 +187,10 @@ impl Bin {
     pub(crate) fn allocate_consecutive_chunks(&mut self, hyperion_pointer: &mut HyperionPointer) -> bool {
         // Check for 8 free consecutive chunks
         // 8 consecutive chunks are free, if their byte representation in the usage mask is == 255
-        for (i, byte) in self.chunk_usage_mask.iter_mut().take(8).enumerate() {
-            if *byte == 255 {
-                *byte = 0;
+        for i in 0..(BIN_ELEMENTS / 8) {
+            let byte = unsafe { self.chunk_usage_mask.as_mut_ptr().add(i) as *mut u8 };
+            if unsafe { *byte == 255 } {
+                unsafe { *byte = 0 };
                 hyperion_pointer.set_chunk_id(i as u16 * 8);
                 self.header.set_chance2nd_alloc(0);
                 return true;
@@ -188,20 +199,22 @@ impl Bin {
         false
     }
 
+    /// Tears down this bin and frees its chunk.
     pub(crate) fn teardown(&mut self, size: usize) {
         if self.is_empty() {
             return;
         }
         let bin_size: usize = size
             * match self.header.compression_state() {
-                CompressionState::DEFLATE => BIN_ELEMENTS_DEFLATED,
-                _ => BIN_ELEMENTS
+                CompressionState::Deflate => BIN_ELEMENTS_DEFLATED,
+                _ => BIN_ELEMENTS,
             };
 
         if size != size_of::<ExtendedHyperionPointer>() {
             unsafe {
                 assert!(auto_free_memory(self.chunks.get(), bin_size, self.header.allocated_by()));
             }
+            self.chunks.store(null_mut());
         } else {
             unsafe {
                 let mut iterator: *mut ExtendedHyperionPointer = self.chunks.get() as *mut ExtendedHyperionPointer;
@@ -213,6 +226,7 @@ impl Bin {
                     iterator = iterator.add(1);
                 }
                 assert!(auto_free_memory(self.chunks.get(), size * BIN_ELEMENTS, self.header.allocated_by()));
+                self.chunks.store(null_mut());
             }
         }
     }

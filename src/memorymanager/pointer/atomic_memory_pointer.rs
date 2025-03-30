@@ -21,7 +21,7 @@ use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPo
 /// Wrapper type for an AtomicPointer to a memory mapped region, stored as
 /// `*mut c_void`.
 pub struct AtomicMemoryPointer {
-    ptr: AtomicPtr<c_void>
+    ptr: AtomicPtr<c_void>,
 }
 
 impl Clone for AtomicMemoryPointer {
@@ -31,7 +31,7 @@ impl Clone for AtomicMemoryPointer {
     /// Returns the new `AtomicPointer`.
     fn clone(&self) -> Self {
         AtomicMemoryPointer {
-            ptr: AtomicPtr::new(self.ptr.load(Ordering::Relaxed))
+            ptr: AtomicPtr::new(self.ptr.load(Ordering::Relaxed)),
         }
     }
 
@@ -59,12 +59,18 @@ impl AtomicMemoryPointer {
     /// created `AtomicMemoryPointer`.
     pub fn new() -> Self {
         AtomicMemoryPointer {
-            ptr: AtomicPtr::new(null_mut())
+            ptr: AtomicPtr::new(null_mut()),
         }
     }
 
     /// Returns a raw pointer to the stored memory region.
     pub fn get(&mut self) -> *mut c_void {
+        // No synchronization requires when loading
+        self.ptr.load(Ordering::Relaxed)
+    }
+
+    /// Returns a raw pointer to the stored memory region.
+    pub fn read(&self) -> *const c_void {
         // No synchronization requires when loading
         self.ptr.load(Ordering::Relaxed)
     }

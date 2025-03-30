@@ -19,7 +19,7 @@
 use bitfield_struct::bitfield;
 
 /// `HyperionPointer`, defined as bitfield-struct
-#[bitfield(u64, order = Msb)]
+#[bitfield(u64)]
 pub struct HyperionPointer {
     /// 6 bit superbin id, ranging from 0 to 63
     #[bits(6)]

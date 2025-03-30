@@ -1,26 +1,29 @@
-use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T2};
-use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use crate::memorymanager::internals::simd_avx2::*;
 use crate::memorymanager::internals::simd_sse4_1::*;
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T2};
+use std::ffi::c_void;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 
+/// Applies all SIMD functions which take a raw pointer as argument
 pub(crate) fn apply_simd<T, R>(field: &[T], simd_func: unsafe fn(*const c_void) -> R) -> R {
     let field_ptr: *const c_void = field.as_ptr() as *const c_void;
     unsafe { simd_func(field_ptr) }
 }
 
+/// Applies the sorted insert SIMD function to a slice.
 pub(crate) fn apply_sorted_insert<T>(num: u16, field: &[T]) -> Option<usize> {
     let field_ptr: *const u16 = field.as_ptr() as *const u16;
     unsafe { sorted_insert_256_2(num, field_ptr) }
 }
 
+/// Applies the index a in b SIMD function on a Rust-raw-pointer-type
 pub(crate) fn apply_index_search(num: u16, field: *const u32) -> i32 {
     let field_ptr: *const c_void = field as *const c_void;
     unsafe { index_a_in_b_256(num as i16, field_ptr) }
 }
 
-static mut PSEUDORAND: AtomicUsize = AtomicUsize::new(0);
+static PSEUDORAND: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
 pub(crate) unsafe fn prefetch(addr: *const u8) {
@@ -28,11 +31,13 @@ pub(crate) unsafe fn prefetch(addr: *const u8) {
     _mm_prefetch::<_MM_HINT_T2>(addr as *const i8);
 }
 
+/// Returns if all bits are set in the referenced memory region.
 unsafe fn all_bits_set_256_fallback(p_256: *const c_void) -> bool {
     let p_ptr: *const u64 = p_256 as *const u64;
     (*p_ptr != 0) && (*p_ptr.add(1) != 0) && (*p_ptr.add(2) != 0) && (*p_ptr.add(3) != 0)
 }
 
+/// Returns if all bits are set in the referenced memory region.
 pub(crate) unsafe fn all_bits_set_256(p_256: *const c_void) -> bool {
     if p_256.is_null() {
         return false;
@@ -47,6 +52,7 @@ pub(crate) unsafe fn all_bits_set_256(p_256: *const c_void) -> bool {
     }
 }
 
+/// Returns if all bits are set in the referenced memory region.
 pub(crate) unsafe fn all_bits_set_4096(p_4096: *const c_void) -> bool {
     for i in 0..(4096 / 256) {
         prefetch((p_4096 as *const u8).add((i + 1) * 32));
@@ -57,6 +63,7 @@ pub(crate) unsafe fn all_bits_set_4096(p_4096: *const c_void) -> bool {
     all_bits_set_256(p_4096.add(480))
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 unsafe fn get_index_first_set_bit_256_fallback(p_256: *const c_void) -> i32 {
     // Iterate over all 64-bit words in p_256
     // If a 64-bit word contains 1, return the index of the 64-bit word + offset within the word
@@ -71,6 +78,7 @@ unsafe fn get_index_first_set_bit_256_fallback(p_256: *const c_void) -> i32 {
     -1
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 unsafe fn get_index_first_set_bit_256_fallback_2(p_256: *const c_void) -> Option<i32> {
     // Iterate over all 64-bit words in p_256
     // If a 64-bit word contains 1, return the index of the 64-bit word + offset within the word
@@ -85,6 +93,7 @@ unsafe fn get_index_first_set_bit_256_fallback_2(p_256: *const c_void) -> Option
     None
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 pub(crate) unsafe fn get_index_first_set_bit_256(p_256: *const c_void) -> i32 {
     if p_256.is_null() {
         return -1;
@@ -99,6 +108,7 @@ pub(crate) unsafe fn get_index_first_set_bit_256(p_256: *const c_void) -> i32 {
     }
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 pub(crate) unsafe fn get_index_first_set_bit_256_2(p_256: *const c_void) -> Option<i32> {
     if p_256.is_null() {
         return None;
@@ -113,42 +123,45 @@ pub(crate) unsafe fn get_index_first_set_bit_256_2(p_256: *const c_void) -> Opti
     }
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 pub(crate) unsafe fn get_index_first_set_bit_4096(p_4096: *const c_void) -> i32 {
     const BLOCKS_SIZE: usize = 32;
     const BITS_PER_BLOCK: usize = 256;
     const BLOCKS: usize = 4096 / BITS_PER_BLOCK;
-    let offset: usize = PSEUDORAND.load(Ordering::Relaxed);
+    let offset: usize = PSEUDORAND.load(Relaxed);
 
     for i in 0..BLOCKS {
         let block = (i + offset) & (BLOCKS - 1);
         let res: i32 = get_index_first_set_bit_256(p_4096.add(block * BLOCKS_SIZE));
         if res != -1 {
-            PSEUDORAND.store(block, Ordering::Relaxed);
+            PSEUDORAND.store(block, Relaxed);
             return (block * BITS_PER_BLOCK) as i32 + res;
         }
     }
-    PSEUDORAND.store(0, Ordering::Relaxed);
+    PSEUDORAND.store(0, Relaxed);
     -1
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 pub(crate) unsafe fn get_index_first_set_bit_4096_2(p_4096: *const c_void) -> Option<i32> {
     const BLOCKS_SIZE: usize = 32;
     const BITS_PER_BLOCK: usize = 256;
     const BLOCKS: usize = 4096 / BITS_PER_BLOCK;
-    let offset: usize = PSEUDORAND.load(Ordering::Relaxed);
+    let offset: usize = PSEUDORAND.load(Relaxed);
 
     for i in 0..BLOCKS {
         let block = (i + offset) & (BLOCKS - 1);
         let res: Option<i32> = get_index_first_set_bit_256_2(p_4096.add(block * BLOCKS_SIZE));
-        if res.is_some() {
-            PSEUDORAND.store(block, Ordering::Relaxed);
-            return Some((block * BITS_PER_BLOCK) as i32 + res.unwrap());
+        if let Some(result) = res {
+            PSEUDORAND.store(block, Relaxed);
+            return Some((block * BITS_PER_BLOCK) as i32 + result);
         }
     }
-    PSEUDORAND.store(0, Ordering::Relaxed);
+    PSEUDORAND.store(0, Relaxed);
     None
 }
 
+/// Returns the number of set bits.
 pub(crate) unsafe fn count_set_bits(p_4096: *const c_void) -> i32 {
     let p = p_4096 as *const u8;
     let count = 4096 / 64;
@@ -165,10 +178,12 @@ pub(crate) unsafe fn count_set_bits(p_4096: *const c_void) -> i32 {
         .sum() // Sum up all counts of set bits of all 8-byte words
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 unsafe fn sorted_insert_256_fallback(a: u16, p_256: *const u16) -> i32 {
-    (0..16).find(|&i| a <= *p_256.add(i)).map_or(-1, |i| if a != *p_256.add(i) { i as i32 } else { -1 })
+    (0i32..16i32).find(|&i| a <= *p_256.add(i as usize)).filter(|&i| a != *p_256.add(i as usize)).unwrap_or(-1)
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 pub(crate) unsafe fn sorted_insert_256(a: u16, b: *const u16) -> i32 {
     if b.is_null() {
         return -1;
@@ -183,10 +198,12 @@ pub(crate) unsafe fn sorted_insert_256(a: u16, b: *const u16) -> i32 {
     }
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 unsafe fn sorted_insert_256_fallback_2(a: u16, p_256: *const u16) -> Option<usize> {
-    (0..16).find(|&i| a <= *p_256.add(i)).map_or(None, |i| if a != *p_256.add(i) { Some(i) } else { None })
+    (0..16).find(|&i| a <= *p_256.add(i)).filter(|&i| a != *p_256.add(i))
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 pub(crate) unsafe fn sorted_insert_256_2(a: u16, b: *const u16) -> Option<usize> {
     if b.is_null() {
         return None;
@@ -201,11 +218,13 @@ pub(crate) unsafe fn sorted_insert_256_2(a: u16, b: *const u16) -> Option<usize>
     }
 }
 
+/// Returns if `a` is contained in `p_256`.
 unsafe fn a_in_b_256_fallback(a: u16, p_b256: *const u16) -> i32 {
     (0..16).any(|i| *p_b256.add(i) == a) as i32
 }
 
-pub(crate) unsafe fn a_in_b_256(a: u16, p_b256: *const u16) -> i32 {
+/// Returns if `a` is contained in `p_256`.
+pub unsafe fn a_in_b_256(a: u16, p_b256: *const u16) -> i32 {
     if p_b256.is_null() {
         return -1;
     }
@@ -217,6 +236,10 @@ pub(crate) unsafe fn a_in_b_256(a: u16, p_b256: *const u16) -> i32 {
     } else {
         a_in_b_256_fallback(a, p_b256)
     }
+}
+
+pub(crate) fn clear_simd() {
+    PSEUDORAND.store(0, Relaxed);
 }
 
 #[cfg(test)]
@@ -236,8 +259,8 @@ mod ops_test {
             }
 
             assert!(all_bits_set_256_avx2(ptr as *const c_void));
-            assert_eq!(all_bits_set_256_sse41(ptr as *const c_void), true);
-            assert_eq!(all_bits_set_256_fallback(ptr as *const c_void), true);
+            assert!(all_bits_set_256_sse41(ptr as *const c_void));
+            assert!(all_bits_set_256_fallback(ptr as *const c_void));
 
             let ptr2 = alloc(layout);
 
@@ -245,9 +268,9 @@ mod ops_test {
                 ptr.add(i).write(0x00);
             }
 
-            assert_eq!(all_bits_set_256_avx2(ptr2 as *const c_void), false);
-            assert_eq!(all_bits_set_256_sse41(ptr2 as *const c_void), false);
-            assert_eq!(all_bits_set_256_fallback(ptr2 as *const c_void), false);
+            assert!(!all_bits_set_256_avx2(ptr2 as *const c_void));
+            assert!(!all_bits_set_256_sse41(ptr2 as *const c_void));
+            assert!(!all_bits_set_256_fallback(ptr2 as *const c_void));
 
             dealloc(ptr, layout);
             dealloc(ptr2, layout);
@@ -267,7 +290,7 @@ mod ops_test {
                 ptr.add(i).write(0xFF);
             }
 
-            assert_eq!(all_bits_set_4096(ptr as *const c_void), true);
+            assert!(all_bits_set_4096(ptr as *const c_void));
 
             let ptr2 = alloc(layout);
 
@@ -275,7 +298,7 @@ mod ops_test {
                 ptr.add(i).write(0x00);
             }
 
-            assert_eq!(all_bits_set_4096(ptr2 as *const c_void), false);
+            assert!(!all_bits_set_4096(ptr2 as *const c_void));
 
             dealloc(ptr, layout);
             dealloc(ptr2, layout);

@@ -1,6 +1,7 @@
 use std::arch::x86_64::*;
 use std::ffi::c_void;
 
+/// Returns if all bits are set in the referenced memory region.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn all_bits_set_256_avx2(p_256: *const c_void) -> bool {
     // Invert the contents of p_256
@@ -11,6 +12,7 @@ pub(crate) unsafe fn all_bits_set_256_avx2(p_256: *const c_void) -> bool {
     _mm256_testc_si256(test_vector, all_ones) == 1
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn get_index_first_set_bit_256_avx2(p_256: *const c_void) -> i32 {
     _mm_prefetch::<_MM_HINT_T0>(p_256 as *const i8);
@@ -32,6 +34,7 @@ pub(crate) unsafe fn get_index_first_set_bit_256_avx2(p_256: *const c_void) -> i
     ((byte_index as i32) * 8) + bit_pos
 }
 
+/// Returns the index of the first set bit int the referenced memory region.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn get_index_first_set_bit_256_avx2_2(p_256: *const c_void) -> Option<i32> {
     _mm_prefetch::<_MM_HINT_T0>(p_256 as *const i8);
@@ -47,12 +50,18 @@ pub(crate) unsafe fn get_index_first_set_bit_256_avx2_2(p_256: *const c_void) ->
         return None;
     }
 
+    /*let byte_index = bitmask.trailing_zeros() as usize + 1;
+    let byte = *(p_256 as *const i32).add((byte_index - 1) / 4);
+    let bit_pos = byte + ((byte_index as i32 - 1) * 8);
+    Some(bit_pos.trailing_zeros() as i32)*/
+
     let byte_index = (bitmask as u32).trailing_zeros() as usize;
     let byte = *(p_256 as *const u8).add(byte_index);
     let bit_pos = byte.trailing_zeros() as i32;
     Some(((byte_index as i32) * 8) + bit_pos)
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn sorted_insert_256_avx2(a: u16, p_256: *const u16) -> i32 {
     // Load p_256 and create a vector containing all a's value
@@ -69,6 +78,7 @@ pub(crate) unsafe fn sorted_insert_256_avx2(a: u16, p_256: *const u16) -> i32 {
     _mm_tzcnt_32(bitmask as u32) / 2
 }
 
+/// Returns the index of where to insert `a` into `p_256` in a sorted manner.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn sorted_insert_256_avx2_2(a: u16, p_256: *const u16) -> Option<usize> {
     // Load p_256 and create a vector containing all a's value
@@ -85,6 +95,7 @@ pub(crate) unsafe fn sorted_insert_256_avx2_2(a: u16, p_256: *const u16) -> Opti
     Some((_mm_tzcnt_32(bitmask as u32) / 2) as usize)
 }
 
+/// Returns if `a` is contained in `p_256`.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn index_a_in_b_256(a: i16, p_b256: *const c_void) -> i32 {
     let test_vector: __m256i = _mm256_lddqu_si256(p_b256 as *const __m256i);
@@ -97,6 +108,7 @@ pub(crate) unsafe fn index_a_in_b_256(a: i16, p_b256: *const c_void) -> i32 {
     _mm_tzcnt_32(bitmask as u32) / 2
 }
 
+/// Returns if `a` is contained in `p_256`.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn a_in_b_256_avx2(a: u16, p_b256: *const u16) -> i32 {
     (index_a_in_b_256(a as i16, p_b256 as *const c_void) != -1) as i32

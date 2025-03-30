@@ -7,20 +7,41 @@ edition = "2021"
 libc = "0.2.169"
 lz4-sys = "1.11.1"
 bitfield-struct = "0.10.1"
-either = "1.13.0"
 zstd-sys = "2.0.13"
 spin = "0.9.8"
+once_cell = "1.20.3"
+rand = { version = "0.9.0" }
+lazy_static = "1.5.0"
+criterion = "0.5.1"
+chrono = "0.4.39"
 
 [features]
 compression = []
 migration = []
+triestats = []
 
+[build]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "target-feature=+sse4.1,+avx2"
+]
 
 [profile.dev]
 debug = true
+opt-level = 3
 
 [profile.release]
-debug = true
+debug = false
+panic = "abort"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
 
 [profile.test]
 debug = true
+opt-level = 3
+
+[lib]
+name = "hyperion"
+crate-type = ["cdylib"]

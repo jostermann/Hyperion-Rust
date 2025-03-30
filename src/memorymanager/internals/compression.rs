@@ -3,21 +3,21 @@ use crate::memorymanager::components::arena::ArenaInner;
 use crate::memorymanager::components::bin::{Bin, BIN_ELEMENTS, BIN_ELEMENTS_DEFLATED};
 use crate::memorymanager::components::metabin::Metabin;
 use crate::memorymanager::components::superbin::{Superbin, SUPERBIN_ARRAY_MAXSIZE};
-use crate::memorymanager::internals::allocator::AllocatedBy::Mmap;
-use crate::memorymanager::internals::allocator::{allocate_mmap, auto_allocate_memory, auto_free_memory};
+use crate::memorymanager::internals::allocator::AllocatedBy::{Heap, Mmap};
+use crate::memorymanager::internals::allocator::{allocate_heap, allocate_mmap, auto_allocate_memory, auto_free_memory};
 use crate::memorymanager::internals::simd_common::a_in_b_256;
 use crate::memorymanager::internals::simd_common::apply_simd;
 use crate::memorymanager::internals::system_information::get_memory_stats;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 use libc::{c_char, c_int, memcpy, memset};
-use lz4_sys::LZ4_compress_fast;
+use lz4_sys::{LZ4_compress_fast, LZ4_decompress_safe};
 use std::cmp::PartialEq;
 use std::ffi::c_void;
 use std::intrinsics::copy_nonoverlapping;
-use std::ptr::copy;
-use std::sync::atomic::Ordering::Relaxed;
+use std::ptr::{copy, null_mut};
+use std::sync::atomic::Ordering::{Relaxed, Release};
 use std::sync::atomic::{AtomicI32, AtomicI64};
-use zstd_sys::ZSTD_compress;
+use zstd_sys::{ZSTD_compress, ZSTD_decompress};
 
 pub(crate) const SLIDING_WINDOW_SIZE: usize = 12;
 /// Start deflating
@@ -47,7 +47,7 @@ pub(crate) enum CompressionStrategy {
     Zstd,
 }
 
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug, PartialOrd, PartialEq, Copy, Clone)]
 pub(crate) enum CompressionState {
     None = 0,
     Deflate = 1,
@@ -339,16 +339,60 @@ pub(crate) fn perform_arena_deflation(arena: &mut ArenaInner) -> bool {
     todo!()
 }
 
-pub(crate) fn perform_arena_compression(arena: &mut ArenaInner, compression_strategy: CompressionStrategy) -> bool {
+pub(crate) fn handle_strategy_compress(arena: &mut ArenaInner, compression_strategy: CompressionStrategy) -> bool {
     todo!()
 }
 
 pub(crate) fn decompress_bin(bin: &mut Bin) {
-    todo!()
+    if bin.chunks.is_notnull() {
+        unsafe {
+            let head = bin.chunks.get() as *mut CompressedContainerHead;
+            let original_compression_state = (*head).original_compression_state;
+            let compressed = (head as *mut u8).add(size_of::<CompressedContainerHead>());
+            let target = allocate_mmap((*head).original_size as usize);
+            
+            if bin.header.compression_state() == CompressionState::Zstd {
+                assert_eq!((*head).original_size as usize, ZSTD_decompress(target, (*head).original_size as usize, compressed as *const c_void, (*head).compressed_size as usize - size_of::<CompressedContainerHead>()));
+            }
+            else {
+                assert_eq!(bin.header.compression_state(), CompressionState::Lz4);
+                assert_eq!((*head).original_size as c_int, LZ4_decompress_safe(compressed as *const c_char, target as *mut c_char, ((*head).compressed_size as usize - size_of::<CompressedContainerHead>()) as c_int, (*head).original_size as c_int));
+            }
+            DECOMPRESSED_BYTES.fetch_add(((*head).original_size - (*head).compressed_size) as i64, Relaxed);
+            ORIGINAL_DECOMPRESSED_SIZE.fetch_add((*head).original_size as i64, Relaxed);
+            bin.header.set_compression_state(original_compression_state);
+            assert!(auto_free_memory(bin.chunks.get(), (*head).compressed_size as usize, bin.header.allocated_by()));
+            bin.chunks.store(target);
+            bin.header.set_allocated_by(Mmap);
+            bin.header.set_chance2nd_read(0);
+        }
+    }
 }
 
 pub(crate) fn decompress_extended(extended_pointer: *mut ExtendedHyperionPointer) {
-    todo!()
+    unsafe {
+        let head = (*extended_pointer).data.get() as *mut CompressedContainerHead;
+        let compressed = (head as *mut u8).add(size_of::<CompressedContainerHead>());
+        let target = allocate_heap((*head).original_size as usize);
+        assert!(!target.is_null());
+        assert_ne!((*extended_pointer).header.compression_state(), CompressionState::None);
+        assert_ne!((*extended_pointer).header.compression_state(), CompressionState::Deflate);
+        
+        if (*extended_pointer).header.compression_state() == CompressionState::Zstd {
+            assert_eq!((*head).original_size as usize, ZSTD_decompress(target, (*head).original_size as usize, compressed as *const c_void, (*head).compressed_size as usize - size_of::<CompressedContainerHead>()));
+        }
+        else {
+            assert_eq!((*head).original_size as c_int, LZ4_decompress_safe(compressed as *const c_char, target as *mut c_char, ((*head).compressed_size as usize - size_of::<CompressedContainerHead>()) as c_int, (*head).original_size as c_int));
+        }
+        DECOMPRESSED_BYTES.fetch_add(((*head).original_size - (*head).compressed_size) as i64, Relaxed);
+        ORIGINAL_DECOMPRESSED_SIZE.fetch_add((*head).original_size as i64, Relaxed);
+        assert!(auto_free_memory((*extended_pointer).data.get(), (*head).compressed_size as usize, (*extended_pointer).header.alloced_by()));
+        (*extended_pointer).data.store(null_mut());
+        (*extended_pointer).header.set_alloced_by(Heap);
+        (*extended_pointer).data.store(target);
+        (*extended_pointer).chance2nd_read = 0;
+        (*extended_pointer).header.set_compression_state(CompressionState::None);
+    }
 }
 
 pub(crate) fn compress_arena(arena: &mut ArenaInner) -> bool {
@@ -357,6 +401,6 @@ pub(crate) fn compress_arena(arena: &mut ArenaInner) -> bool {
     match compression_strategy {
         CompressionStrategy::None => false,
         CompressionStrategy::Deflate => perform_arena_deflation(arena),
-        _ => perform_arena_compression(arena, compression_strategy),
+        _ => handle_strategy_compress(arena, compression_strategy),
     }
 }

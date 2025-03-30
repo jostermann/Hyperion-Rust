@@ -1020,7 +1020,7 @@ pub fn get_child_container_pointer(
     // The child container pointer must be retrieved from the root container
     if let Some(ref mut next_ptr) = ocx.next_container_pointer {
         // log_to_file("update next container pointer");
-        let value = unsafe { *((node_head as *mut u8).add(get_offset_child_container(node_head))) };
+        // let value = unsafe { *((node_head as *mut u8).add(get_offset_child_container(node_head))) };
         // log_to_file(&format!("root container offset value: {}", value));
         *next_ptr = unsafe { (node_head as *mut u8).add(get_offset_child_container(node_head)) as *mut HyperionPointer };
     }
@@ -1609,9 +1609,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 } else {
                     panic!("{}", ERR_NO_NEXT_CONTAINER)
                 }
-
-                let t = get_sub_node_key(node_head as *mut Node, ctx, false);
-
+                
                 /*log_to_file(
                     &format!("new embedded container at key {}; new size calculated: {}, new size set: {}",
                              t, size_of::<EmbeddedContainer>() + size_of::<NodeHeader>() + 1 + value_present * size_of::<NodeValue>(),
@@ -1662,9 +1660,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 } else {
                     panic!("{}", ERR_NO_NEXT_CONTAINER)
                 }
-
-                let t = get_sub_node_key(node_head as *mut Node, ctx, false);
-
+                
                 /*log_to_file(
                 &format!("new embedded container at key {}; new size calculated: {}, new size set: {}",
                          t, size_of::<EmbeddedContainer>() + (size_of::<NodeHeader>() + 1) * 2 + value_present * size_of::<NodeValue>(),
@@ -1729,9 +1725,7 @@ pub fn transform_pc_node(mut node_head: *mut NodeHeader, ocx: &mut OperationCont
                 } else {
                     panic!("{}", ERR_NO_NEXT_CONTAINER)
                 }
-
-                let t = get_sub_node_key(node_head as *mut Node, ctx, false);
-
+                
                 /*log_to_file(
                 &format!("new embedded container at key {}; new size calculated: {}, new size set: {}",
                          t, size_of::<EmbeddedContainer>()

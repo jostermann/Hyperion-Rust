@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader};
 use std::mem::MaybeUninit;
 
 use libc::{sysinfo, sysinfo as sysinfo_t};
-use spin::{RwLock, RwLockReadGuard};
+use spin::RwLock;
 
 #[derive(Debug, Copy, Clone)]
 pub struct MemorySettings {

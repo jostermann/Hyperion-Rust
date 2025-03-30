@@ -89,7 +89,7 @@ struct TransformUniformSTKeyBitmap {
 pub fn preprocess_english_language_memory(key: *const u8, key_len: &mut u16, destination: *mut u8) {
     let mut src = key;
     let mut dest = destination;
-    for i in 0..*key_len {
+    for _ in 0..*key_len {
         unsafe {
             *dest = ENCODING_MAP_MEMORYOPT[*src as usize];
             dest = dest.add(1);
@@ -101,7 +101,7 @@ pub fn preprocess_english_language_memory(key: *const u8, key_len: &mut u16, des
 pub fn preprocess_english_language_performance(key: *const u8, key_len: &mut u16, destination: *mut u8) {
     let mut src = key;
     let mut dest = destination;
-    for i in 0..*key_len {
+    for _ in 0..*key_len {
         unsafe {
             *dest = ENCODING_MAP_PERFOPT[*src as usize];
             dest = dest.add(1);

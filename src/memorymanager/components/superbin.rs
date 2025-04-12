@@ -144,7 +144,7 @@ impl Superbin {
     /// Deletes all unused metabins from this superbin instance.
     pub(crate) fn delete_unused_metabins(&mut self) {
         while self.header.metabins_initialized() > 1 {
-            let next_metabin_id: u16 = self.header.metabins_initialized();
+            let next_metabin_id: u16 = self.header.metabins_initialized() - 1;
             let deletion_successful = self.metabins.delete_metabin(next_metabin_id as usize);
 
             if !deletion_successful {
@@ -196,16 +196,13 @@ impl Superbin {
                 let _ = self.metabins.check_extend_pointer_array(metabins_initialized as usize);
             }
 
-            let allocation_successful: bool = self.metabins.new_metabin_at(metabins_initialized as usize);
-
-            if allocation_successful {
-                self.metabins.get_mut(metabins_initialized as usize).unwrap().initialize(metabins_initialized);
-                self.metabin_ring[0] = metabins_initialized;
-                self.header.set_metabins_initialized(metabins_initialized + 1);
-            }
+            let _: bool = self.metabins.new_metabin_at(metabins_initialized as usize);
+             self.metabins.get_mut(metabins_initialized as usize).unwrap().initialize(metabins_initialized);
+            self.metabin_ring[0] = metabins_initialized;
+            self.header.set_metabins_initialized(metabins_initialized + 1);
         } else {
             self.shift_metabin_ring_left();
-            self.metabin_ring[METABIN_RING_SIZE - 1] = self.header.metabins_initialized();
+            self.metabin_ring[METABIN_RING_SIZE - 1] = self.header.metabins_initialized() - 1;
         }
     }
 }

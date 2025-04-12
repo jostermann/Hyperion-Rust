@@ -568,7 +568,7 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                         // log_to_file(&format!("scan_put_embedded set current container offset to {}", ctx.current_container_offset));
                         continue;
                     },
-                    Ordering::Equal => return handle_equal_keys(ocx, ctx, node_header),
+                    Ordering::Equal => return handle_equal_keys(ocx, ctx, node_header, true),
                     Ordering::Greater => {
                         ctx.header.set_force_shift_before_insert(true);
                         let key_delta_sub = ctx.key_delta_sub();
@@ -603,11 +603,26 @@ pub fn scan_put_single(ocx: &mut OperationContext, ctx: &mut ContainerTraversalC
     // log_to_file(&format!("scan put single set max offset to: {}", ctx.max_offset));
 
     let mut node_head = initialize_data_for_scan(ocx, ctx, &mut key, &mut skip_all);
-
-    while ctx.current_container_offset < ocx.get_root_container().size() as usize && as_top_node(node_head).type_flag() != Invalid {
-        if skip_all {
+    
+    let mut skip_first = false;
+    
+    loop {
+        if !skip_all {
             node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+            
+            if ctx.max_offset > ctx.current_container_offset {
+                skip_first = true;
+            }
         }
+        
+        if !skip_all && !skip_first && (ctx.current_container_offset >= ocx.get_root_container().size() as usize || as_top_node(node_head).type_flag() == Invalid) {
+            break;
+        }
+        
+        if skip_first {
+            skip_first = false;
+        }
+        black_box(skip_first);
 
         if !skip_all && as_top_node(node_head).container_type() == NodeState::SubNode {
             ocx.jump_context.sub_nodes_seen += 1;
@@ -738,6 +753,7 @@ fn handle_expand(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext
 /// Scans through the container and inserts the second_char key.
 pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, destination: Option<u8>) -> ReturnCode {
     let mut jump_key_query = false;
+    let mut skip_first = false;
     let mut key = destination.unwrap_or(0);
     ctx.max_offset = (ocx.get_root_container().size() as i32 - ocx.get_root_container().free_bytes() as i32) as usize;
     // log_to_file(&format!("scan_put_phase2 set safe offset to {}", ctx.max_offset));
@@ -747,7 +763,22 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
         jump_key_query = true;
     }
 
-    while (ctx.current_container_offset < ocx.get_root_container().size() as usize) && (as_top_node(node_head).type_flag() != Invalid) {
+    loop {
+        assert!(ctx.max_offset > 0);
+        
+        if ctx.max_offset > ctx.current_container_offset {
+            skip_first = true;
+        }
+        
+        if !skip_first && (ctx.current_container_offset >= ocx.get_root_container().size() as usize || as_top_node(node_head).type_flag() == Invalid) {
+            break;
+        }
+        
+        if skip_first {
+            skip_first = false;
+        }
+        black_box(skip_first);
+        
         if as_top_node(node_head).container_type() == NodeState::TopNode {
             // log_to_file("scan_put_phase2 top");
             ctx.header.set_force_shift_before_insert(true);
@@ -769,7 +800,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
 
         if !jump_key_query {
             key = get_sub_node_key(node_head as *mut Node, ctx, false);
-            // log_to_file(&format!("scan_put_phase2 found key {}", key));
+            //log_to_file(&format!("scan_put_phase2 found key {}", key));
         }
 
         match key.cmp(&ctx.second_char) {
@@ -777,7 +808,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
                 // Since the search key is smaller than the found key, and the keys are stored in ascending order, the key cannot
                 // be inserted here.
                 ctx.current_container_offset += get_offset_sub_node(node_head);
-                // log_to_file(&format!("scan_put_phase2 lt set current container offset: {}", ctx.current_container_offset));
+                //log_to_file(&format!("scan_put_phase2 lt set current container offset: {}", ctx.current_container_offset));
                 node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
                 ctx.header.set_last_sub_char_set(true);
                 ctx.last_sub_char_seen = key;
@@ -788,7 +819,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
                     if ocx.jump_context.sub_nodes_seen >= TOP_NODE_JUMP_TABLE_HWM as i32 {
                         // The distance between the top node and the to be inserted sub node is too large. Create a jump table and restart
                         // the scan.
-                        // log_to_file("scan_put_phase2 jump back to scan_put");
+                        //log_to_file("scan_put_phase2 jump back to scan_put");
                         create_top_node_jump_table(ocx.top_jump_table_context.top_node.expect(ERR_NO_NODE), ocx, ctx);
                         ctx.flush();
                         ocx.flush_jump_context();
@@ -801,7 +832,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
             },
             Ordering::Equal => {
                 // Both keys are equal. Use handle_equal_keys to check on how to insert the new key.
-                return handle_equal_keys(ocx, ctx, node_head);
+                return handle_equal_keys(ocx, ctx, node_head, false);
             },
             Ordering::Greater => {
                 // The new key can be inserted in front of the found sub node's key. Force shift the sub node forward and insert the
@@ -853,10 +884,10 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
 }
 
 /// Decides on how to insert the keys in the case that an equal sub node key was found.
-fn handle_equal_keys(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, node_head: *mut NodeHeader) -> ReturnCode {
+fn handle_equal_keys(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, node_head: *mut NodeHeader, embedded: bool) -> ReturnCode {
     if ctx.header.end_operation() {
         // Force insert the key
-        return handle_expand(ocx, ctx, node_head, false);
+        return handle_expand(ocx, ctx, node_head, embedded);
     }
 
     match as_sub_node(node_head).child_container() {
@@ -1038,6 +1069,7 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
     }
 
     // log_to_file("scan_put dropped out of loop condition");
+    node_head = unsafe { (ocx.embedded_traversal_context.root_container as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
 
     // Scanned through all stored nodes and reached the end of the stored data. The reached memory region of this container is
     // currently all-zeroed and unused.

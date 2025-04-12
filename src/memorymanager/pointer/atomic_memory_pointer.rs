@@ -30,9 +30,9 @@ impl Clone for AtomicMemoryPointer {
     /// Clones the calling AtomicPointer into a new AtomicPointer.
     /// Returns the new `AtomicPointer`.
     fn clone(&self) -> Self {
-        AtomicMemoryPointer {
-            ptr: AtomicPtr::new(self.ptr.load(Ordering::Relaxed)),
-        }
+        let mut ptr = AtomicMemoryPointer::new();
+        ptr.store(self.ptr.load(Ordering::Relaxed));
+        ptr
     }
 
     /// Implements cloning from a source AtomicPointer into the calling AtomicPointer.

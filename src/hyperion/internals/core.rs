@@ -40,6 +40,7 @@ use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::ptr::{copy, copy_nonoverlapping, null_mut, read_unaligned, write_bytes, write_unaligned, NonNull};
 use std::{fs, io};
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 
 pub const CONTAINER_SPLIT_THRESHOLD_A: usize = 12288;
 pub const CONTAINER_SPLIT_THRESHOLD_B: usize = 65536;
@@ -824,6 +825,7 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
         if ocx.header.next_container_valid() == ContainerValid {
             ocx.embedded_traversal_context.root_container =
                 get_pointer(ocx.arena, ocx.next_container_pointer.expect(ERR_NO_POINTER), 0, ctx.first_char) as *mut Container;
+            unsafe { _mm_prefetch::<_MM_HINT_T0>(ocx.embedded_traversal_context.root_container as *const i8); }
             assert!(!ocx.embedded_traversal_context.root_container.is_null());
             ocx.header.set_next_container_valid(ContainerValidTypes::Invalid);
             ocx.embedded_traversal_context.root_container_pointer = ocx.next_container_pointer.unwrap();

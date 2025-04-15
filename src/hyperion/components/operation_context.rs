@@ -745,6 +745,8 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
     // log_to_file(&format!("scan_put_phase2 set safe offset to {}", ctx.max_offset));
     let mut node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
     unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
+    unsafe { _mm_prefetch::<_MM_HINT_T0>(as_top_node(node_head) as *const _ as *const i8); }
+    unsafe { _mm_prefetch::<_MM_HINT_T0>(ocx.embedded_traversal_context.root_container as *const i8); }
 
     if destination.is_some() && key != 0 {
         jump_key_query = true;
@@ -913,9 +915,11 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
     }
 
     while ctx.max_offset > ctx.current_container_offset {
+        unsafe { _mm_prefetch::<_MM_HINT_T0>(&*GLOBAL_CONFIG as *const _ as *const i8); }
+        unsafe { _mm_prefetch::<_MM_HINT_T0>(&*(GLOBAL_CONFIG.read()) as *const _ as *const i8); }
+        
         if !skip_all && !skip_first {
             node_head = unsafe { (ocx.embedded_traversal_context.root_container as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
-            unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
 
             if as_top_node(node_head).container_type() == NodeState::SubNode {
                 // Need to insert a top node, found a sub node
@@ -982,6 +986,8 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
                 // log_to_file(&format!("scan_put set top offset to: {}", ocx.jump_context.top_node_predecessor_offset_absolute));
                 // log_to_file(&format!("scan_put set current container offset to {}", ctx.current_container_offset));
                 node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(&*as_top_node(node_head) as *const _ as *const i8); }
                 skip_first = jump_successor_present;
             },
             Ordering::Equal => {
@@ -990,6 +996,7 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
                 ctx.header.set_in_first_char_scope(true);
                 let ret = handle_insert_jump(ocx, ctx, node_head);
                 node_head = ret;
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(&*as_top_node(node_head) as *const _ as *const i8); }
                 ocx.top_jump_table_context.top_node = Some(node_head);
                 ocx.jump_context.top_node_predecessor_offset_absolute =
                     unsafe { (node_head as *mut u8).offset_from(ocx.get_root_container_pointer() as *mut u8) as i32 };

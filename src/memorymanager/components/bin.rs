@@ -38,7 +38,6 @@ pub(crate) struct BinHeader {
 }
 
 /// Creates a single bin instance.
-#[derive(Clone)]
 #[repr(C, align(1))]
 pub(crate) struct Bin {
     /// Stores metadate for this bin instance.
@@ -59,6 +58,16 @@ impl Default for Bin {
                 .with_chance2nd_alloc(0),
             chunks: AtomicMemoryPointer::new(),
             chunk_usage_mask: [0; BIN_FREELIST_ELEMENTS],
+        }
+    }
+}
+
+impl Clone for Bin {
+    fn clone(&self) -> Self {
+        Bin {
+            header: self.header,
+            chunks: AtomicMemoryPointer::clone(&self.chunks),
+            chunk_usage_mask: self.chunk_usage_mask,
         }
     }
 }
@@ -206,9 +215,9 @@ impl Bin {
         }
         let bin_size: usize = size
             * match self.header.compression_state() {
-                CompressionState::Deflate => BIN_ELEMENTS_DEFLATED,
-                _ => BIN_ELEMENTS,
-            };
+            CompressionState::Deflate => BIN_ELEMENTS_DEFLATED,
+            _ => BIN_ELEMENTS,
+        };
 
         if size != size_of::<ExtendedHyperionPointer>() {
             unsafe {

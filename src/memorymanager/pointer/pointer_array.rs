@@ -11,7 +11,7 @@
 //! To provide a safe implementation, `PointerArray` wraps the double-pointer
 //! construct into `Box`, `Option` and Slices.
 
-use crate::memorymanager::components::metabin::{Metabin, META_MAXMETABINS};
+use crate::memorymanager::components::metabin::{Metabin, METABIN_ELEMENTS, META_MAXMETABINS};
 use crate::memorymanager::internals::simd_common::{all_bits_set_256, apply_simd};
 
 /// Defines the wrapper structure and a type alias for the more complex implementation details.
@@ -49,7 +49,12 @@ impl PointerArray {
     /// Returns `true`, if the operation was successful.
     /// Return `false`, otherwise.
     pub(crate) fn new_metabin_at(&mut self, index: usize) -> bool {
-        (index < POINTER_ARRAY_INCREMENT).then(|| self.array[index] = Some(Box::new(Metabin::default()))).is_some()
+        if index < POINTER_ARRAY_INCREMENT {
+            self.array[index] = Some(Box::new(Metabin::default()));
+            return true;
+        }
+        false
+        //(index < POINTER_ARRAY_INCREMENT).then(|| ))).is_some()
     }
 
     // pub(crate) fn set(&mut self, index: usize, metabin: Metabin) -> bool {
@@ -91,12 +96,21 @@ impl PointerArray {
         }
 
         if let Some(metabin) = &self.array[index] {
-            let is_full = apply_simd(&metabin.bin_usage_mask, all_bits_set_256);
-
-            if is_full {
-                self.array[index] = None;
-                return true;
+            let is_empty = apply_simd(&metabin.bin_usage_mask, all_bits_set_256);
+            
+            if !is_empty {
+                return false;
             }
+            
+            for i in 0..METABIN_ELEMENTS {
+                let bin = &metabin.bins[i];
+                if bin.chunks.is_notnull() {
+                    return false;
+                }
+            }
+
+            self.array[index] = None;
+            return true;
         }
         false
     }
@@ -119,16 +133,31 @@ impl PointerArray {
     /// Returns `true` if the extension was successful.
     /// Returns `false`, otherwise.
     fn realloc_pointer_array(&mut self) -> bool {
-        let mut vec = self.array.to_vec();
+        //let mut vec = self.array.to_vec();
+        let current_len = self.array.len();
 
-        if vec.len() + POINTER_ARRAY_INCREMENT > META_MAXMETABINS as usize {
+        if current_len + POINTER_ARRAY_INCREMENT > META_MAXMETABINS as usize {
             return false;
         }
 
+        let mut new_vec = Vec::with_capacity(current_len + POINTER_ARRAY_INCREMENT);
+
+        for i in 0..current_len {
+            new_vec.push(self.array[i].take());
+        }
+
+        for _ in 0..POINTER_ARRAY_INCREMENT {
+            new_vec.push(Some(Box::new(Metabin::default())));
+        }
+
+        /*if vec.len() + POINTER_ARRAY_INCREMENT > META_MAXMETABINS as usize {
+            return false;
+        }*/
+
         // reserve additional POINTER_ARRAY_INCREMENT indices
-        vec.reserve(POINTER_ARRAY_INCREMENT);
-        vec.extend((0..POINTER_ARRAY_INCREMENT).map(|_| Some(Box::new(Metabin::default()))));
-        self.array = vec.into_boxed_slice();
+        //vec.reserve(POINTER_ARRAY_INCREMENT);
+        //vec.extend((0..POINTER_ARRAY_INCREMENT).map(|_| Some(Box::new(Metabin::default()))));
+        self.array = new_vec.into_boxed_slice();
         true
     }
 }

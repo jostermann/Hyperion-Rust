@@ -23,7 +23,7 @@ triestats = []
 [build]
 rustflags = [
     "-C", "target-cpu=native",
-    "-C", "target-feature=+sse4.1,+avx2"
+    "-C", "target-feature=+mmx,+sse,+sse3,+sse4.1,+sse4.1,+avx,+avx2"
 ]
 
 [profile.dev]
@@ -37,6 +37,7 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+incremental = false
 
 [profile.test]
 debug = true

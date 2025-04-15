@@ -28,6 +28,7 @@ use crate::hyperion::internals::errors::{
 };
 use crate::memorymanager::api::{get_pointer, reallocate, Arena, HyperionPointer};
 use bitfield_struct::bitfield;
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 use std::cmp::Ordering;
 use std::hint::black_box;
 use std::intrinsics::write_bytes;
@@ -139,13 +140,13 @@ impl OperationContext {
     ///
     /// # Panics
     /// - if the root container pointer stored in [`OperationContext`] is a null pointer.
-    #[inline]
+    #[inline(always)]
     pub fn get_root_container(&mut self) -> &mut Container {
         unsafe { self.embedded_traversal_context.root_container.as_mut().expect(ERR_NO_CAST_MUT_REF) }
     }
 
     /// Returns a pointer to the current root container.
-    #[inline]
+    #[inline(always)]
     pub fn get_root_container_pointer(&mut self) -> *mut Container {
         self.embedded_traversal_context.root_container
     }
@@ -154,6 +155,7 @@ impl OperationContext {
     ///
     /// # Panics
     /// - if the arena pointer stored in [`OperationContext`] is a null pointer.
+    #[inline(always)]
     pub fn get_arena(&mut self) -> &mut Arena {
         unsafe { self.arena.as_mut().expect(ERR_NO_CAST_MUT_REF) }
     }
@@ -568,7 +570,7 @@ pub fn scan_put_embedded(ocx: &mut OperationContext, ctx: &mut ContainerTraversa
                         // log_to_file(&format!("scan_put_embedded set current container offset to {}", ctx.current_container_offset));
                         continue;
                     },
-                    Ordering::Equal => return handle_equal_keys(ocx, ctx, node_header),
+                    Ordering::Equal => return handle_equal_keys(ocx, ctx, node_header, true),
                     Ordering::Greater => {
                         ctx.header.set_force_shift_before_insert(true);
                         let key_delta_sub = ctx.key_delta_sub();
@@ -742,6 +744,9 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
     ctx.max_offset = (ocx.get_root_container().size() as i32 - ocx.get_root_container().free_bytes() as i32) as usize;
     // log_to_file(&format!("scan_put_phase2 set safe offset to {}", ctx.max_offset));
     let mut node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+    unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
+    unsafe { _mm_prefetch::<_MM_HINT_T0>(as_top_node(node_head) as *const _ as *const i8); }
+    unsafe { _mm_prefetch::<_MM_HINT_T0>(ocx.embedded_traversal_context.root_container as *const i8); }
 
     if destination.is_some() && key != 0 {
         jump_key_query = true;
@@ -801,7 +806,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
             },
             Ordering::Equal => {
                 // Both keys are equal. Use handle_equal_keys to check on how to insert the new key.
-                return handle_equal_keys(ocx, ctx, node_head);
+                return handle_equal_keys(ocx, ctx, node_head, false);
             },
             Ordering::Greater => {
                 // The new key can be inserted in front of the found sub node's key. Force shift the sub node forward and insert the
@@ -853,10 +858,10 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
 }
 
 /// Decides on how to insert the keys in the case that an equal sub node key was found.
-fn handle_equal_keys(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, node_head: *mut NodeHeader) -> ReturnCode {
+fn handle_equal_keys(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, node_head: *mut NodeHeader, embedded: bool) -> ReturnCode {
     if ctx.header.end_operation() {
         // Force insert the key
-        return handle_expand(ocx, ctx, node_head, false);
+        return handle_expand(ocx, ctx, node_head, embedded);
     }
 
     match as_sub_node(node_head).child_container() {
@@ -904,11 +909,15 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
 
         if ocx.jump_context.top_node_key != 0 {
             node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+            unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
             skip_all = true;
         }
     }
 
     while ctx.max_offset > ctx.current_container_offset {
+        unsafe { _mm_prefetch::<_MM_HINT_T0>(&*GLOBAL_CONFIG as *const _ as *const i8); }
+        unsafe { _mm_prefetch::<_MM_HINT_T0>(&*(GLOBAL_CONFIG.read()) as *const _ as *const i8); }
+        
         if !skip_all && !skip_first {
             node_head = unsafe { (ocx.embedded_traversal_context.root_container as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
 
@@ -977,6 +986,8 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
                 // log_to_file(&format!("scan_put set top offset to: {}", ocx.jump_context.top_node_predecessor_offset_absolute));
                 // log_to_file(&format!("scan_put set current container offset to {}", ctx.current_container_offset));
                 node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(&*as_top_node(node_head) as *const _ as *const i8); }
                 skip_first = jump_successor_present;
             },
             Ordering::Equal => {
@@ -985,6 +996,7 @@ pub fn scan_put(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext)
                 ctx.header.set_in_first_char_scope(true);
                 let ret = handle_insert_jump(ocx, ctx, node_head);
                 node_head = ret;
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(&*as_top_node(node_head) as *const _ as *const i8); }
                 ocx.top_jump_table_context.top_node = Some(node_head);
                 ocx.jump_context.top_node_predecessor_offset_absolute =
                     unsafe { (node_head as *mut u8).offset_from(ocx.get_root_container_pointer() as *mut u8) as i32 };

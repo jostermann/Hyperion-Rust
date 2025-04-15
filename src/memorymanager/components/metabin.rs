@@ -15,7 +15,6 @@ pub(crate) const METABIN_FREELIST_ELEMENTS: usize = 8;
 pub(crate) const META_MAXMETABINS: u32 = 1 << METABIN_BITS;
 
 /// Creates a single metabin instance.
-#[derive(Clone)]
 #[repr(C)]
 pub(crate) struct Metabin {
     pub(crate) free_chunks: u8,
@@ -37,6 +36,18 @@ impl Default for Metabin {
             bin_usage_mask: [0; METABIN_FREELIST_ELEMENTS],
             bins,
             free_chunks: 0,
+        }
+    }
+}
+
+impl Clone for Metabin {
+    fn clone(&self) -> Self {
+        Metabin {
+            free_chunks: self.free_chunks,
+            bin_compression_rr: self.bin_compression_rr,
+            id: self.id,
+            bin_usage_mask: self.bin_usage_mask,
+            bins: self.bins.clone(),
         }
     }
 }

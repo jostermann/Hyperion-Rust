@@ -387,7 +387,7 @@ pub struct RootContainerStats {
 }
 
 pub struct RootContainerEntryInner {
-    
+
 }
 
 pub struct RootContainerEntry {

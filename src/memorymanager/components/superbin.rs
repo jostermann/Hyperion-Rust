@@ -196,8 +196,10 @@ impl Superbin {
                 let _ = self.metabins.check_extend_pointer_array(metabins_initialized as usize);
             }
 
+            let allocation_successful: bool = self.metabins.new_metabin_at(metabins_initialized as usize);
+
             let _: bool = self.metabins.new_metabin_at(metabins_initialized as usize);
-             self.metabins.get_mut(metabins_initialized as usize).unwrap().initialize(metabins_initialized);
+            self.metabins.get_mut(metabins_initialized as usize).unwrap().initialize(metabins_initialized);
             self.metabin_ring[0] = metabins_initialized;
             self.header.set_metabins_initialized(metabins_initialized + 1);
         } else {

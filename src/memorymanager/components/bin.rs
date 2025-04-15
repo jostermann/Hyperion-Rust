@@ -215,9 +215,9 @@ impl Bin {
         }
         let bin_size: usize = size
             * match self.header.compression_state() {
-                CompressionState::Deflate => BIN_ELEMENTS_DEFLATED,
-                _ => BIN_ELEMENTS,
-            };
+            CompressionState::Deflate => BIN_ELEMENTS_DEFLATED,
+            _ => BIN_ELEMENTS,
+        };
 
         if size != size_of::<ExtendedHyperionPointer>() {
             unsafe {

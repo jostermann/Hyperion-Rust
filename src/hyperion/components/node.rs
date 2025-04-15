@@ -226,10 +226,10 @@ fn adjust_memory_allocation(node: *mut Node, skipped: u32, ocx: &mut OperationCo
     let free_bytes: u8 = ocx.get_root_container().free_bytes();
     let trailing_bytes: u32 = ocx.get_root_container().size()
         - (ocx.embedded_traversal_context.next_embedded_container_offset as u32
-            + ctx.current_container_offset as u32
-            + skipped
-            + 2
-            + free_bytes as u32);
+        + ctx.current_container_offset as u32
+        + skipped
+        + 2
+        + free_bytes as u32);
     // node_ptr points to the start of the nodes head: | node head (1 B) | key (1 B) | other
     let node_ptr: *mut u8 = node as *mut u8;
 

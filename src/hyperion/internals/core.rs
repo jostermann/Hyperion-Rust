@@ -729,7 +729,6 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
                 };
                 node_head = insert_jump_successor(ocx, ctx, jump_value);
             }
-            continue;
         }
 
         if skip_first {
@@ -775,7 +774,6 @@ fn scan_meta(ocx: &mut OperationContext, ctx: &mut ContainerTraversalContext, no
                 // log_to_file(&format!("scan_meta set container offset to: {}", ctx.current_container_offset));
                 node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
                 skip_first = successor_present;
-                if skip_first { skip_check = true; }
             },
             Ordering::Equal => {
                 if as_top_node(node_head).jump_table_present() {
@@ -865,7 +863,7 @@ pub fn traverse_tree(ocx: &mut OperationContext) -> ReturnCode {
                     if ocx.get_root_container().size() <= 2 * DEFAULT_CONTAINER_SIZE && ocx.header.next_container_valid() == ContainerValid {
                         if ocx.container_injection_context.root_container.is_some()
                             && ((ocx.get_root_container().size() as i32 + ocx.get_injection_root_container().size() as i32)
-                                < (GLOBAL_CONFIG.read().header.container_embedding_high_watermark() as i32))
+                            < (GLOBAL_CONFIG.read().header.container_embedding_high_watermark() as i32))
                         {
                             inject_container(ocx);
                             ocx.container_injection_context.root_container = None;

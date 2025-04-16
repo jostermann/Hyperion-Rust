@@ -10,7 +10,7 @@ use crate::memorymanager::internals::system_information::get_memory_stats;
 use crate::memorymanager::pointer::extended_hyperion_pointer::ExtendedHyperionPointer;
 use crate::memorymanager::pointer::hyperion_pointer::HyperionPointer;
 use chrono::Local;
-use spin::RwLock;
+use parking_lot::RwLock;
 use std::env;
 use std::ffi::c_void;
 use std::fs::OpenOptions;
@@ -96,7 +96,7 @@ pub fn get_chunk(arena: &mut ArenaInner, hyperion_pointer: &mut HyperionPointer,
     let data: *mut c_void = get_chunk_pointer(arena, hyperion_pointer);
     let current_bin_from_pointer: &mut Bin = arena.get_bin_ref(hyperion_pointer);
     current_bin_from_pointer.header.set_chance2nd_read(0);
-    //PROBE_COMPRESSION.read()(arena);
+    PROBE_COMPRESSION.read()(arena);
     // log_to_file(&format!("Get new pointer for: {:?}", hyperion_pointer));
     // log_to_file(&format!("Pointer is null: {}", data.is_null() as usize));
     data
@@ -115,7 +115,7 @@ pub fn get_chunk_pointer_from_extended(arena: &mut ArenaInner, hyperion_pointer:
         extended_pointer.chance2nd_read = 0;
         extended_pointer.data.get()
     };
-    //PROBE_COMPRESSION.read()(arena);
+    PROBE_COMPRESSION.read()(arena);
     extended_pointer_data
 }
 

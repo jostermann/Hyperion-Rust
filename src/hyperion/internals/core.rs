@@ -40,6 +40,10 @@ use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::ptr::{copy, copy_nonoverlapping, null_mut, read_unaligned, write_bytes, write_unaligned, NonNull};
 use std::{fs, io};
+use crate::hyperion::internals::errors::{ERR_EMPTY_EMB_STACK_POS, ERR_NO_NODE, ERR_NO_POINTER, ERR_NO_SUCCESSOR, ERR_NO_VALUE};
+use once_cell::sync::Lazy;
+use spin::{Mutex};
+use parking_lot::RwLock;
 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 
 pub const CONTAINER_SPLIT_THRESHOLD_A: usize = 12288;
@@ -87,10 +91,6 @@ pub static GLOBAL_CONFIG: Lazy<RwLock<GlobalConfiguration>> = Lazy::new(|| {
         num_reads_million: 0,
     })
 });
-
-pub fn get_global_cfg() -> *mut GlobalConfiguration {
-    GLOBAL_CONFIG.as_mut_ptr()
-}
 
 /// Initializes a new container with a required minimum size.
 ///
@@ -1302,10 +1302,6 @@ struct TrieStats {
     pub top_jumps: [i64; 8],
     pub cont_splitting_increment: [i64; 4],
 }
-
-use crate::hyperion::internals::errors::{ERR_EMPTY_EMB_STACK_POS, ERR_NO_NODE, ERR_NO_POINTER, ERR_NO_SUCCESSOR, ERR_NO_VALUE};
-use once_cell::sync::Lazy;
-use spin::{Mutex, RwLock};
 
 static TRIE_STATS: Lazy<RwLock<TrieStats>> = Lazy::new(|| {
     RwLock::new(TrieStats {

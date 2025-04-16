@@ -12,7 +12,7 @@ use crate::hyperion::preprocessor::key_preprocessor::{
 use crate::memorymanager::api::{get_next_arena, initialize, memory_manager_statistics, teardown};
 use once_cell::sync::Lazy;
 use spin::mutex::Mutex;
-use spin::RwLock;
+use parking_lot::RwLock;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use crate::hyperion::monitor::{join_monitor_deamon, spawn_monitor_deamon};
@@ -57,7 +57,7 @@ pub fn bootstrap(logfile_prefix: Option<&str>) -> Arc<Mutex<RootContainerArray>>
             preprocessor: Preprocessor::None,
         })));
     }
-    
+
     match GLOBAL_CONFIG.read().header.preprocessor_strategy() {
         Preprocessor::None => {},
         Preprocessor::UniformKeyDistributionSingleThread => {
@@ -113,7 +113,7 @@ pub fn get_root_container_entry(root_container_array: &Arc<Mutex<RootContainerAr
             }
         }
     }
-    
+
     array_guard.root_container_entries[index].as_ref().unwrap().clone()
 }
 

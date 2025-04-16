@@ -1,4 +1,3 @@
-use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 use crate::hyperion::components::container::{
     get_container_head_size, get_container_link_size, initialize_container, shift_container, update_space, wrap_shift_container, Container,
     ContainerLink, EmbeddedContainer, CONTAINER_MAX_EMBEDDED_DEPTH, CONTAINER_MAX_FREE_BYTES,
@@ -1281,8 +1280,6 @@ pub fn create_top_node_jump_table(mut node_head: *mut NodeHeader, ocx: &mut Oper
     unsafe { shift_container(jump_table as *mut u8, size_of::<TopNodeJumpTable>(), bytes_to_move as usize) };
     update_space(size_of::<TopNodeJumpTable>() as i16, ocx, ctx);
     node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(node_offset) as *mut NodeHeader };
-    unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
-    unsafe { _mm_prefetch::<_MM_HINT_T0>(as_top_node(node_head) as *const _ as *const i8); }
 
     // Create a temporary container traversal context, so the original traversal context doesn't get polluted
     let mut tmp_ctx = ContainerTraversalContext {

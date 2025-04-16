@@ -745,7 +745,6 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
     // log_to_file(&format!("scan_put_phase2 set safe offset to {}", ctx.max_offset));
     let mut node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
     unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
-    unsafe { _mm_prefetch::<_MM_HINT_T0>(as_top_node(node_head) as *const _ as *const i8); }
     unsafe { _mm_prefetch::<_MM_HINT_T0>(ocx.embedded_traversal_context.root_container as *const i8); }
 
     if destination.is_some() && key != 0 {
@@ -784,6 +783,7 @@ pub fn scan_put_second_char(ocx: &mut OperationContext, ctx: &mut ContainerTrave
                 ctx.current_container_offset += get_offset_sub_node(node_head);
                 // log_to_file(&format!("scan_put_phase2 lt set current container offset: {}", ctx.current_container_offset));
                 node_head = unsafe { (ocx.get_root_container_pointer() as *mut u8).add(ctx.current_container_offset) as *mut NodeHeader };
+                unsafe { _mm_prefetch::<_MM_HINT_T0>(node_head as *const i8); }
                 ctx.header.set_last_sub_char_set(true);
                 ctx.last_sub_char_seen = key;
 
